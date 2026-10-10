@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from aether.components.shared import new_id
 
 from aether.components.capatability import CapabilitySet
 from aether.components.goal import GoalManager, Goal
 from aether.components.inventory import Inventory
-from aether.components.knowledge import Knowledge, Belief
-from aether.components.memory import Memory, MemoryRecord
+from aether.cognition.knowledge import Knowledge, Belief
+from aether.cognition.memory import Memory, MemoryRecord
 from aether.components.planner import Planner
 from aether.domain.relationship import RelationshipManager, Relationship
 
@@ -95,8 +95,10 @@ class Personality(BaseModel):
 
 class Character(BaseModel):
     """
-    Aggregate root representing an intelligent actor inside a world.
+    Intelligent character inside a the World.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     id: str = Field(
         default_factory=lambda: new_id("char"),

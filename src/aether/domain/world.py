@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from aether.domain.actions import Action
 from aether.domain.character import Character, CharacterIdentity
 from aether.domain.events import EventStore, WorldEvent
-from aether.domain.registries import AetherModule, ModuleRegistry
+from aether.engine.registries import AetherModule
 from aether.domain.sessions import Session
 from aether.components.shared import AetherError, AetherValidationError, new_id
+from aether.engine.runtime_engine import RuntimeEngine
 
 
 class WorldMetadata(BaseModel):
@@ -156,6 +157,8 @@ class World(BaseModel):
     Aggregate root representing a persistent interactive world.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     id: str = Field(
         default_factory=lambda: new_id("world"),
         description="Unique identifier for this world.",
@@ -178,7 +181,7 @@ class World(BaseModel):
 
     characters: Dict[str, Character] = Field(
         default_factory=dict,
-        description="Mapping of character ID to Character aggregate.",
+        description="Mapping of character ID to Character.",
     )
 
     items: Dict[str, Item] = Field(
@@ -191,22 +194,24 @@ class World(BaseModel):
         description="Mapping of session ID to Session aggregate.",
     )
 
-    modules: ModuleRegistry = Field(
-        default_factory=ModuleRegistry,
-        description="Installed modules and their action/event registries.",
-    )
-
     events: EventStore = Field(
         default_factory=EventStore,
         description="Committed world event store.",
     )
 
-    def install(self, module: Union[List[AetherModule], AetherModule]) -> None:
-        if isinstance(module, AetherModule):
-            self.modules.register(module)
-            return
-        for m in module:
-            self.modules.register(m)
+    engine: RuntimeEngine = Field(
+        default_factory=RuntimeEngine,
+        description="Runtime engine for this world.",
+    )
+
+    def _require_engine(self) -> RuntimeEngine:
+        if self.engine is None:
+            raise AetherValidationError(
+                "World has no runtime engine. Create it via Aether.create_world()."
+            )
+        return self.engine
+
+ 
 
     def create_location(
         self,
@@ -322,54 +327,20 @@ class World(BaseModel):
 
         return session
 
+
     def step(self, action: Action) -> SimulationResult:
-        """
-        Main deterministic simulation entry point.
-
-        Flow:
-        1. Validate action shape through ActionRegistry.
-        2. Find the registered action handler.
-        3. Handler validates mechanic-specific rules.
-        4. Handler mutates state and returns events.
-        5. Validate event shapes through EventSchemaRegistry.
-        6. Commit events.
-        7. Increment world version.
-        """
-
         try:
-            validated_action = self.modules.actions.validate(action)
-            handler = self.modules.actions.get_handler(validated_action.type)
-
-            events = handler(self, validated_action)
-
-            validated_events = [
-                self.modules.events.validate(event)
-                for event in events
-            ]
-
-            self.events.append_many(validated_events)
-            self.state.increment_version()
-
+            events = self._require_engine().execute(self, action)
             return SimulationResult(
                 accepted=True,
                 action_id=action.id,
-                events=validated_events,
+                events=events,
             )
-
-        except AetherError as error:
+        except AetherError as exc:
             return SimulationResult(
                 accepted=False,
+                reason=str(exc),
                 action_id=action.id,
-                reason=str(error),
-                events=[],
-            )
-
-        except ValueError as error:
-            return SimulationResult(
-                accepted=False,
-                action_id=action.id,
-                reason=str(error),
-                events=[],
             )
 
     def determine_witnesses(self, actor_id: str) -> List[str]:

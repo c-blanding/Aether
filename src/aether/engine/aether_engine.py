@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from aether.domain.actions import Action
 from aether.domain.character import Character
 from aether.domain.interactions import DialogueLine, Interaction
+from aether.engine.registries import AetherModule
 from aether.components.shared import AetherValidationError
 from aether.domain.world import World, WorldMetadata
+from aether.engine.runtime_engine import RuntimeEngine
 
 
-class Runtime(BaseModel):
+class Runtime:
     """
     AI orchestration placeholder.
 
@@ -19,14 +21,14 @@ class Runtime(BaseModel):
     and generation.
     """
 
-    def interpret(self, message: str, actor_id: str = "player") -> List[Action]:
+    def interpret(self, message: str, actor_id: str = "player") -> list[Action]:
         return []
 
     def generate_dialogue(
         self,
         character: Character,
         interaction: Interaction,
-    ) -> List[DialogueLine]:
+    ) -> list[DialogueLine]:
         return []
 
 
@@ -47,54 +49,28 @@ class AetherConfig(BaseModel):
     )
 
 
-
-class ProviderRegistry(BaseModel):
+class ProviderRegistry:
     """
     Registry for external providers such as LLMs, image models, and voice models.
     """
 
-    llm_providers: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Mapping of LLM provider name to provider client/configuration.",
-    )
-
-    image_providers: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Mapping of image provider name to provider client/configuration.",
-    )
-
-    voice_providers: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Mapping of voice provider name to provider client/configuration.",
-    )
+    def __init__(self) -> None:
+        self.llm_providers: dict[str, Any] = {}
+        self.image_providers: dict[str, Any] = {}
+        self.voice_providers: dict[str, Any] = {}
 
 
-class Aether(BaseModel):
+class Aether:
     """
-    Root SDK object.
-
-    Developers start here.
+     AI simulation SDK for building persistent, intelligent characters and evolving interactive worlds.
     """
 
-    worlds: Dict[str, World] = Field(
-        default_factory=dict,
-        description="Mapping of world ID to World aggregate.",
-    )
-
-    runtime: Runtime = Field(
-        default_factory=Runtime,
-        description="AI runtime responsible for interpretation and generation.",
-    )
-
-    providers: ProviderRegistry = Field(
-        default_factory=ProviderRegistry,
-        description="Registry of external model and media providers.",
-    )
-
-    configuration: AetherConfig = Field(
-        default_factory=AetherConfig,
-        description="SDK-level runtime configuration.",
-    )
+    def __init__(self) -> None:
+        self.engine = RuntimeEngine()
+        self.worlds: dict[str, World] = {}
+        self.runtime = Runtime()
+        self.providers = ProviderRegistry()
+        self.configuration = AetherConfig()
 
     def create_world(
         self,
@@ -105,11 +81,18 @@ class Aether(BaseModel):
             metadata=WorldMetadata(
                 name=name,
                 description=description,
-            )
+            ),
+            engine=self.engine,
         )
-
         self.worlds[world.id] = world
         return world
+
+           ## Modules to use in the world
+    def use(self, *modules: AetherModule) -> Aether:
+        for module in modules:
+            self.engine.register_module(module)
+        
+        return self
 
     def get_world(self, world_id: str) -> World:
         world = self.worlds.get(world_id)

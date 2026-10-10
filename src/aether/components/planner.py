@@ -1,13 +1,7 @@
-from pydantic import BaseModel, Field
-
-
-class Planner(BaseModel):
+class Planner:
     """
     Placeholder planning configuration for future AI behavior.
     """
 
-    strategy: str = Field(
-        default="goal_driven",
-        description="Planning strategy used by this character.",
-        examples=["goal_driven"],
-    )
+    def __init__(self, strategy: str = "goal_driven") -> None:
+        self.strategy = strategy

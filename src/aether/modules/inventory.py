@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from aether.domain.actions import Action
 from aether.domain.events import WorldActionEvent, WorldEvent
-from aether.domain.registries import AetherModule
+from aether.engine.registries import AetherModule, ModuleRegistry
 from aether.components.shared import AetherValidationError
 from aether.domain.world import World
 
@@ -25,7 +25,10 @@ class UseItemParams(BaseModel):
 
 class UseItemAttributes(BaseModel):
     item_id: str = Field(description="ID of the item that was used.")
-    target_ids: List[str] = Field(description="IDs of entities the item was used on.")
+    target_ids: List[str] = Field(
+        default_factory=list,
+        description="IDs of entities the item was used on.",
+    )
     used_by_id: str = Field(description="ID of the character that used the item.")
 
 
@@ -133,30 +136,57 @@ class InventoryModule(AetherModule):
     - pick_up_item
     - drop_item
     - give_item
+    - use_item
     """
 
-    def __init__(self) -> None:
-        super().__init__(
-            name="inventory",
-            version="0.1.0",
-            action_schemas={
-                "pick_up_item": PickUpItemParams,
-                "drop_item": DropItemParams,
-                "give_item": GiveItemParams,
-                "use_item" : UseItemParams
-            },
-            event_schemas={
-                "item_picked_up": ItemPickedUpAttributes,
-                "item_dropped": ItemDroppedAttributes,
-                "item_given": ItemGivenAttributes,
-                "item_used" : UseItemAttributes
-            },
-            action_handlers={
-                "pick_up_item": self.pick_up_item,
-                "drop_item": self.drop_item,
-                "give_item": self.give_item,
-                "use_item" : self.use_item
-            },
+    name = "inventory"
+    version = "0.1.0"
+
+    def register(self, registry: ModuleRegistry) -> None:
+        registry.actions.register(
+            action_type="pick_up_item",
+            module_name=self.name,
+            parameter_model=PickUpItemParams,
+            handler=self.pick_up_item,
+        )
+        registry.actions.register(
+            action_type="drop_item",
+            module_name=self.name,
+            parameter_model=DropItemParams,
+            handler=self.drop_item,
+        )
+        registry.actions.register(
+            action_type="give_item",
+            module_name=self.name,
+            parameter_model=GiveItemParams,
+            handler=self.give_item,
+        )
+        registry.actions.register(
+            action_type="use_item",
+            module_name=self.name,
+            parameter_model=UseItemParams,
+            handler=self.use_item,
+        )
+
+        registry.events.register(
+            event_type="item_picked_up",
+            module_name=self.name,
+            attribute_model=ItemPickedUpAttributes,
+        )
+        registry.events.register(
+            event_type="item_dropped",
+            module_name=self.name,
+            attribute_model=ItemDroppedAttributes,
+        )
+        registry.events.register(
+            event_type="item_given",
+            module_name=self.name,
+            attribute_model=ItemGivenAttributes,
+        )
+        registry.events.register(
+            event_type="item_used",
+            module_name=self.name,
+            attribute_model=UseItemAttributes,
         )
 
     def pick_up_item(self, world: World, action: Action) -> List[WorldEvent]:
@@ -312,12 +342,13 @@ class InventoryModule(AetherModule):
         event = WorldEvent(
             world_id=world.id,
             actor_id=actor.id,
-            target_ids=[item.id],
+            target_ids=[item.id, *params.target_ids],
             data=WorldActionEvent(
                 type="item_used",
                 module="inventory",
                 attributes={
                     "item_id": item.id,
+                    "target_ids": params.target_ids,
                     "used_by_id": actor.id,
                 },
             ),
