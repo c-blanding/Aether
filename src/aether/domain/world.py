@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from aether.domain.actions import Action
 from aether.domain.character import Character, CharacterIdentity
 from aether.domain.events import EventStore, WorldEvent
-from aether.engine.registries import AetherModule
+from aether.modules.base import AetherModule
 from aether.domain.sessions import Session
 from aether.components.shared import AetherError, AetherValidationError, new_id
 from aether.engine.runtime_engine import RuntimeEngine

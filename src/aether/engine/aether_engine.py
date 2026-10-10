@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from aether.domain.actions import Action
 from aether.domain.character import Character
 from aether.domain.interactions import DialogueLine, Interaction
-from aether.engine.registries import AetherModule
+from aether.modules.base import AetherModule
 from aether.components.shared import AetherValidationError
 from aether.domain.world import World, WorldMetadata
 from aether.engine.runtime_engine import RuntimeEngine

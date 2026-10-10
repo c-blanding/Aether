@@ -6,7 +6,8 @@ from pydantic import BaseModel, Field
 
 from aether.domain.actions import Action
 from aether.domain.events import WorldActionEvent, WorldEvent
-from aether.engine.registries import AetherModule, ModuleRegistry
+from aether.engine.registries import ModuleRegistry
+from aether.modules.base import AetherModule
 from aether.components.shared import AetherValidationError
 from aether.domain.world import World
 

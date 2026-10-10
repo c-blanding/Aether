@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from pydantic import BaseModel, Field
 
-
-from aether import World, WorldEvent
+if TYPE_CHECKING:
+    from aether.domain.events import WorldEvent
+    from aether.domain.world import World
 
 
 class Perception(BaseModel):
@@ -66,11 +67,6 @@ class Perception(BaseModel):
         default_factory=list,
         description="Locations involved in this perceived event.",
     )
-
-
-from typing import Optional
-
-from aether.cognition.perception import Perception
 
 
 class PerceptionProcessor:

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Callable, Type
+from typing import TYPE_CHECKING, Any, Callable, Optional, Type
 
 from pydantic import BaseModel
 
@@ -14,6 +13,11 @@ from aether.components.shared import (
     UnknownActionError,
     UnknownEventError,
 )
+
+if TYPE_CHECKING:
+    from aether.cognition.perception import Perception
+    from aether.domain.world import World
+    from aether.modules.base import AetherModule
 
 
 ActionHandler = Callable[[Any, Action], list[WorldEvent]]
@@ -142,18 +146,44 @@ class EventRegistry:
 EventSchemaRegistry = EventRegistry
 
 
+PerceptionHandler = Callable[
+    ["World", str, WorldEvent],
+    Optional["Perception"],
+]
+
+
+class PerceptionRegistry:
+    """Registry that maps event types to perception handlers."""
+
+    def __init__(self) -> None:
+        self.handlers: dict[str, PerceptionHandler] = {}
+
+    def register(
+        self,
+        event_type: str,
+        handler: PerceptionHandler,
+    ) -> None:
+        self.handlers[event_type] = handler
+
+    def get(self, event_type: str) -> Optional[PerceptionHandler]:
+        return self.handlers.get(event_type)
+
+    def supports(self, event_type: str) -> bool:
+        return event_type in self.handlers
+
+
 class ModuleRegistry:
     """
     Registry of installed modules.
 
-    Owns the action and event registries.
+    Owns the action, event, and perception registries.
     """
 
     def __init__(self) -> None:
         self.modules: dict[str, AetherModule] = {}
         self.actions = ActionRegistry()
         self.events = EventRegistry()
-        self.perceptions = Perception
+        self.perceptions = PerceptionRegistry()
 
     def register(self, module: AetherModule) -> None:
         name = getattr(module, "name", None)
@@ -174,46 +204,4 @@ class ModuleRegistry:
 
     def is_installed(self, module_name: str) -> bool:
         return module_name in self.modules
-
-
-
-from typing import Callable, Dict, Optional
-
-from aether.events import WorldEvent
-from aether.cognition.perception import Perception
-
-
-PerceptionHandler = Callable[
-    ["World", str, WorldEvent],
-    Optional[Perception],
-]
-
-
-class PerceptionRegistry:
-    """
-    Registry that maps event types to perception handlers.
-    """
-
-    def __init__(self) -> None:
-        self.handlers: Dict[str, PerceptionHandler] = {}
-
-    def register(
-        self,
-        event_type: str,
-        handler: PerceptionHandler,
-    ) -> None:
-        self.handlers[event_type] = handler
-
-    def get(
-        self,
-        event_type: str,
-    ) -> Optional[PerceptionHandler]:
-        return self.handlers.get(event_type)
-
-    def supports(
-        self,
-        event_type: str,
-    ) -> bool:
-        return event_type in self.handlers
-
 

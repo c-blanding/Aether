@@ -32,7 +32,7 @@ class RuntimeContext(BaseModel):
 
 class Session(BaseModel):
     """
-    Aggregate root representing one playthrough of a world.
+    Session of a world.
     """
 
     id: str = Field(
