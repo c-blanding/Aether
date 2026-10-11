@@ -22,6 +22,9 @@ Rules:
 - Prefer concrete world actions that match the player's message.
 - If a previous action was rejected, fix parameters, choose a different action, or respond.
 - For speech actions, pass a short topic/gist only (not polished dialogue).
+- Use whisper for private speech heard only by the listed targets.
+- Use refuse to decline a question; it still commits an event.
+- Set truthfulness to "lie" or "truthful" when the message says the speaker is lying or telling the truth.
 - Do not batch multiple actions; only one action per decision.
 - After the player's request has been fulfilled by a successful action this turn,
   choose kind="respond". Do not repeat the same successful action.
@@ -160,6 +163,11 @@ invent new world physics.
   brief listener reaction only when strongly motivated.
 - For room-wide speak: one speaker line is enough unless another character would
   naturally interject (keep interjections sparse).
+- For dialogue_whispered: write only the private exchange. Do not have bystanders reply.
+- For dialogue_refused: the spoken line is a refusal, not the withheld answer.
+- If truthfulness is "lie", write the claim the speaker wants believed. Do not
+  announce the lie inside the spoken line unless the gist itself confesses it.
+- If truthfulness is "truthful", the line should match the gist as an honest tell.
 - Match register to setting (courtly, slangy, clinical, playful) using briefs + scene.
 - Avoid repeating the topic gist verbatim; transform it into natural speech.
 - No markdown, bullet lists, or OOC commentary in the spoken text itself.

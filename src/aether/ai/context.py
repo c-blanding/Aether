@@ -75,6 +75,10 @@ class MemoryBrief(BaseModel):
     perspective: str
     importance: float = 0.5
     emotion: Optional[str] = None
+    source: str = Field(
+        default="episodic",
+        description="episodic, pinned, or semantic.",
+    )
 
 
 class CharacterBrief(BaseModel):
@@ -91,6 +95,8 @@ class CharacterBrief(BaseModel):
     goals: list[GoalBrief] = Field(default_factory=list)
     beliefs: list[BeliefBrief] = Field(default_factory=list)
     memories: list[MemoryBrief] = Field(default_factory=list)
+    pinned_facts: list[str] = Field(default_factory=list)
+    semantic_memories: list[str] = Field(default_factory=list)
     relationships: list[RelationshipBrief] = Field(default_factory=list)
 
 

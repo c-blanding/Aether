@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from aether.components.shared import AetherValidationError, new_id
 from aether.components.timeline import Branch, Timeline, Turn
+from aether.cognition.memory import PinnedFact, PinnedKind
 from aether.domain.interactions import (
     Interaction,
     InteractionHistory,
@@ -87,6 +88,21 @@ class Session(BaseModel):
     branch_snapshots: Dict[str, WorldSnapshot] = Field(
         default_factory=dict,
         description="Latest world snapshot for each branch tip.",
+    )
+
+    branch_baselines: Dict[str, WorldSnapshot] = Field(
+        default_factory=dict,
+        description="World snapshot at the moment each branch was created.",
+    )
+
+    pinned_facts: List[PinnedFact] = Field(
+        default_factory=list,
+        description="Session-level facts injected into every character recall pack.",
+    )
+
+    completed_keys: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of branch-scoped idempotency key to interaction ID.",
     )
 
     def model_post_init(self, __context: Any) -> None:
@@ -210,6 +226,7 @@ class Session(BaseModel):
             parent_branch_id=parent_branch_id,
         )
         self.branch_snapshots[branch.id] = snapshot
+        self.branch_baselines[branch.id] = snapshot.clone()
         self.current_branch_id = branch.id
         snapshot.apply_to(world)
         return branch
@@ -287,3 +304,111 @@ class Session(BaseModel):
     ) -> List[Interaction]:
         """Lineage-aware interaction history for a branch."""
         return self.history.by_ids(self.visible_interaction_ids(branch_id))
+
+    def capture_baseline(self, world: World) -> WorldSnapshot:
+        """Remember the world as it was when this branch started."""
+        snapshot = WorldSnapshot.capture(world)
+        self.branch_baselines[self.current_branch_id] = snapshot
+        return snapshot
+
+    def pin_fact(
+        self,
+        text: str,
+        *,
+        key: str = "",
+        kind: PinnedKind = "host",
+    ) -> PinnedFact:
+        """Pin a session fact that later prompts keep for every character."""
+        cleaned = (text or "").strip()
+        if not cleaned:
+            raise AetherValidationError("Pinned fact text is empty.")
+        if key:
+            self.pinned_facts = [fact for fact in self.pinned_facts if fact.key != key]
+        fact = PinnedFact(key=key, text=cleaned, kind=kind)
+        self.pinned_facts.append(fact)
+        return fact
+
+    def _idempotency_scope(self, key: str, branch_id: Optional[str] = None) -> str:
+        return f"{branch_id or self.current_branch_id}:{key}"
+
+    def interaction_for_key(self, key: str) -> Optional[Interaction]:
+        """Return the finished interaction stored for this idempotency key."""
+        interaction_id = self.completed_keys.get(self._idempotency_scope(key))
+        if not interaction_id:
+            return None
+        for interaction in self.history.interactions:
+            if interaction.id == interaction_id and interaction.result is not None:
+                return interaction
+        return None
+
+    def remember_idempotency(self, interaction: Interaction) -> None:
+        key = interaction.request.idempotency_key
+        if key and interaction.result is not None:
+            self.completed_keys[self._idempotency_scope(key, interaction.branch_id)] = (
+                interaction.id
+            )
+
+    def discard_turn(self, turn_id: str, interaction_id: Optional[str] = None) -> None:
+        """Remove a turn that failed before it became the branch tip."""
+        self.timeline.turns = [
+            turn for turn in self.timeline.turns if turn.id != turn_id
+        ]
+        if interaction_id:
+            self.history.interactions = [
+                interaction
+                for interaction in self.history.interactions
+                if interaction.id != interaction_id
+            ]
+
+    def undo_last_turn(self, world: World):
+        """
+        Restore the world to the previous turn on this branch.
+
+        The undone interaction is dropped, including its idempotency key, so a
+        later retry can apply the beat once.
+        """
+        if world.id != self.world_id:
+            raise AetherValidationError(
+                "Cannot undo a session against a different world."
+            )
+        turns = self.timeline.turns_for_branch(self.current_branch_id)
+        if not turns:
+            raise AetherValidationError("No turn to undo on the current branch.")
+
+        last = turns[-1]
+        self.timeline.turns = [
+            turn for turn in self.timeline.turns if turn.id != last.id
+        ]
+        if last.interaction_id:
+            removed = [
+                interaction
+                for interaction in self.history.interactions
+                if interaction.id == last.interaction_id
+            ]
+            self.history.interactions = [
+                interaction
+                for interaction in self.history.interactions
+                if interaction.id != last.interaction_id
+            ]
+            for interaction in removed:
+                key = interaction.request.idempotency_key
+                if key:
+                    self.completed_keys.pop(
+                        self._idempotency_scope(key, interaction.branch_id),
+                        None,
+                    )
+
+        remaining = self.timeline.turns_for_branch(self.current_branch_id)
+        if remaining and remaining[-1].snapshot is not None:
+            snapshot = remaining[-1].snapshot.clone()
+        else:
+            baseline = self.branch_baselines.get(self.current_branch_id)
+            if baseline is None:
+                raise AetherValidationError(
+                    "Cannot undo: this branch has no baseline snapshot."
+                )
+            snapshot = baseline.clone()
+
+        self.branch_snapshots[self.current_branch_id] = snapshot
+        snapshot.apply_to(world)
+        return last

@@ -39,6 +39,18 @@ class EventRepository(ABC):
         """Return the most recent events for a world (chronological order)."""
         ...
 
+    @abstractmethod
+    def delete_by_world(self, world_id: str) -> None:
+        """Remove all events for a world (used when deleting the world)."""
+        ...
+
+    def exists(self, event_id: str) -> bool:
+        try:
+            self.get(event_id)
+            return True
+        except NotFoundError:
+            return False
+
 
 class InMemoryEventRepository(EventRepository):
     """Process-local append-only event store."""
@@ -80,3 +92,14 @@ class InMemoryEventRepository(EventRepository):
 
     def latest_by_world(self, world_id: str, limit: int = 10) -> list[WorldEvent]:
         return self.list_by_world(world_id)[-limit:]
+
+    def delete_by_world(self, world_id: str) -> None:
+        keep_ids = [
+            event_id
+            for event_id in self._order
+            if self._events[event_id].world_id != world_id
+        ]
+        for event_id in list(self._order):
+            if event_id not in keep_ids:
+                self._events.pop(event_id, None)
+        self._order = keep_ids

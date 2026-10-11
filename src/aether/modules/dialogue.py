@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -13,8 +13,16 @@ from aether.engine.registries import ModuleRegistry
 from aether.modules.base import AetherModule
 
 SPEAKING_EVENT_TYPES = frozenset(
-    {"dialogue_spoken", "question_asked", "question_answered"}
+    {
+        "dialogue_spoken",
+        "question_asked",
+        "question_answered",
+        "dialogue_whispered",
+        "dialogue_refused",
+    }
 )
+
+Truthfulness = Literal["truthful", "lie", "unspecified"]
 
 
 class SpeakParams(BaseModel):
@@ -23,6 +31,10 @@ class SpeakParams(BaseModel):
     topic: str = Field(
         ...,
         description="What the speaker intends to say (topic or gist). Exact wording is generated later.",
+    )
+    truthfulness: Truthfulness = Field(
+        default="unspecified",
+        description="Whether the gist is meant as truth, a lie, or left unmarked.",
     )
 
 
@@ -36,6 +48,54 @@ class SayToParams(BaseModel):
     topic: str = Field(
         ...,
         description="What the speaker intends to say (topic or gist). Exact wording is generated later.",
+    )
+    truthfulness: Truthfulness = Field(
+        default="unspecified",
+        description="Whether the gist is meant as truth, a lie, or left unmarked.",
+    )
+
+
+class WhisperParams(BaseModel):
+    """Parameters for private speech heard only by the listed addressees."""
+
+    topic: str = Field(
+        ...,
+        description="What the speaker intends to whisper (topic or gist).",
+    )
+    target_character_ids: List[str] = Field(
+        default_factory=list,
+        description="Character IDs who are allowed to hear the whisper.",
+    )
+    target_character_id: Optional[str] = Field(
+        default=None,
+        description="Optional single addressee (merged into target_character_ids).",
+    )
+    truthfulness: Truthfulness = Field(
+        default="unspecified",
+        description="Whether the whispered gist is meant as truth, a lie, or left unmarked.",
+    )
+
+    @model_validator(mode="after")
+    def _merge_single_target(self) -> "WhisperParams":
+        if self.target_character_id:
+            if self.target_character_id not in self.target_character_ids:
+                self.target_character_ids = [
+                    *self.target_character_ids,
+                    self.target_character_id,
+                ]
+        return self
+
+
+class RefuseParams(BaseModel):
+    """Parameters for declining to answer. Still commits an event."""
+
+    topic: str = Field(
+        ...,
+        description="Topic the speaker is refusing to address.",
+    )
+    questioner_id: Optional[str] = Field(
+        default=None,
+        description="Character who asked, if refusing someone specific.",
     )
 
 
@@ -58,6 +118,10 @@ class AskQuestionParams(BaseModel):
             "Character IDs being asked. Empty means address the crowd "
             "in the speaker's current location."
         ),
+    )
+    truthfulness: Truthfulness = Field(
+        default="unspecified",
+        description="Whether the question's premise is meant as truth, a lie, or left unmarked.",
     )
     target_character_id: Optional[str] = Field(
         default=None,
@@ -89,6 +153,10 @@ class AnswerQuestionParams(BaseModel):
             "Omit to answer the room/crowd."
         ),
     )
+    truthfulness: Truthfulness = Field(
+        default="unspecified",
+        description="Whether the answer is meant as truth, a lie, or left unmarked.",
+    )
 
 
 class DialogueSpokenAttributes(BaseModel):
@@ -103,6 +171,48 @@ class DialogueSpokenAttributes(BaseModel):
     addressed_room: bool = Field(
         default=False,
         description="Whether the speech was addressed to the whole room.",
+    )
+    truthfulness: Truthfulness = Field(
+        default="unspecified",
+        description="Speaker intent flag: truthful, lie, or unspecified.",
+    )
+
+
+class DialogueWhisperedAttributes(BaseModel):
+    """Attributes for private dialogue_whispered events."""
+
+    speaker_id: str = Field(..., description="ID of the speaking character.")
+    listener_ids: List[str] = Field(
+        default_factory=list,
+        description="Character IDs allowed to hear the whisper.",
+    )
+    topic: str = Field(..., description="Gist of what was whispered.")
+    truthfulness: Truthfulness = Field(
+        default="unspecified",
+        description="Speaker intent flag: truthful, lie, or unspecified.",
+    )
+    private: bool = Field(
+        default=True,
+        description="Whispers are private; non-addressees are not witnesses.",
+    )
+
+
+class DialogueRefusedAttributes(BaseModel):
+    """Attributes for dialogue_refused events."""
+
+    speaker_id: str = Field(..., description="ID of the character refusing.")
+    questioner_id: str | None = Field(
+        default=None,
+        description="ID of the character who asked, if refusing someone specific.",
+    )
+    listener_ids: List[str] = Field(
+        default_factory=list,
+        description="Character IDs the refusal is directed at.",
+    )
+    topic: str = Field(..., description="Topic that was refused.")
+    addressed_room: bool = Field(
+        default=False,
+        description="Whether the refusal was addressed to the whole room.",
     )
 
 
@@ -119,6 +229,10 @@ class QuestionAskedAttributes(BaseModel):
         description="Whether the question was addressed to everyone present.",
     )
     topic: str = Field(..., description="Topic or intent of the question.")
+    truthfulness: Truthfulness = Field(
+        default="unspecified",
+        description="Speaker intent flag: truthful, lie, or unspecified.",
+    )
 
 
 class QuestionAnsweredAttributes(BaseModel):
@@ -138,6 +252,10 @@ class QuestionAnsweredAttributes(BaseModel):
         description="Whether the answer was given to the room/crowd.",
     )
     topic: str = Field(..., description="Topic or gist of the answer.")
+    truthfulness: Truthfulness = Field(
+        default="unspecified",
+        description="Speaker intent flag: truthful, lie, or unspecified.",
+    )
 
 
 class DialogueModule(AetherModule):
@@ -175,6 +293,18 @@ class DialogueModule(AetherModule):
             parameter_model=AnswerQuestionParams,
             handler=self.answer_question,
         )
+        registry.actions.register(
+            action_type="whisper",
+            module_name=self.name,
+            parameter_model=WhisperParams,
+            handler=self.whisper,
+        )
+        registry.actions.register(
+            action_type="refuse",
+            module_name=self.name,
+            parameter_model=RefuseParams,
+            handler=self.refuse,
+        )
 
         registry.events.register(
             event_type="dialogue_spoken",
@@ -191,6 +321,16 @@ class DialogueModule(AetherModule):
             module_name=self.name,
             attribute_model=QuestionAnsweredAttributes,
         )
+        registry.events.register(
+            event_type="dialogue_whispered",
+            module_name=self.name,
+            attribute_model=DialogueWhisperedAttributes,
+        )
+        registry.events.register(
+            event_type="dialogue_refused",
+            module_name=self.name,
+            attribute_model=DialogueRefusedAttributes,
+        )
 
         registry.perceptions.register(
             event_type="dialogue_spoken",
@@ -206,6 +346,16 @@ class DialogueModule(AetherModule):
             event_type="question_answered",
             module_name=self.name,
             handler=self.perceive_question_answered,
+        )
+        registry.perceptions.register(
+            event_type="dialogue_whispered",
+            module_name=self.name,
+            handler=self.perceive_dialogue_whispered,
+        )
+        registry.perceptions.register(
+            event_type="dialogue_refused",
+            module_name=self.name,
+            handler=self.perceive_dialogue_refused,
         )
 
     def _require_actor_located(self, world: World, actor_id: str):
@@ -254,6 +404,52 @@ class DialogueModule(AetherModule):
                     f"Actor and target are not in the same location: {target_id}"
                 )
 
+    def _private_witnesses(
+        self,
+        actor_id: str,
+        listener_ids: list[str],
+    ) -> list[str]:
+        """Speaker plus addressees only — bystanders in the room are excluded."""
+        return list(dict.fromkeys([actor_id, *listener_ids]))
+
+    def _color_speaker_truth(
+        self,
+        *,
+        is_speaker: bool,
+        truthfulness: str,
+        topic: str,
+        perspective: str,
+        summary: str,
+        tags: list[str],
+        emotion: str | None,
+        importance: float,
+        emotional_weight: float,
+    ) -> tuple[str, str, list[str], str | None, float, float]:
+        """
+        Lie and truthful tells are distinct in the speaker's own memory.
+
+        Listeners remember the claim, not the concealed intent.
+        """
+        if is_speaker and truthfulness == "lie":
+            return (
+                f"I lied about {topic}.",
+                f"I lied about {topic}.",
+                [*tags, "lie"],
+                "guilt",
+                max(importance, 0.86),
+                max(emotional_weight, 0.62),
+            )
+        if is_speaker and truthfulness == "truthful":
+            return (
+                f"I told the truth about {topic}.",
+                f"I told the truth about {topic}.",
+                [*tags, "truthful"],
+                emotion or "resolve",
+                max(importance, 0.74),
+                max(emotional_weight, 0.4),
+            )
+        return perspective, summary, tags, emotion, importance, emotional_weight
+
     def _crowd_at_location(
         self,
         world: World,
@@ -283,6 +479,7 @@ class DialogueModule(AetherModule):
                     "listener_id": None,
                     "topic": params.topic,
                     "addressed_room": True,
+                    "truthfulness": params.truthfulness,
                 },
             ),
             witnessed_by=world.determine_witnesses(action.actor_id),
@@ -307,6 +504,64 @@ class DialogueModule(AetherModule):
                     "listener_id": params.target_character_id,
                     "topic": params.topic,
                     "addressed_room": False,
+                    "truthfulness": params.truthfulness,
+                },
+            ),
+            witnessed_by=world.determine_witnesses(action.actor_id),
+        )
+        return [event]
+
+    def whisper(self, world: World, action: Action) -> List[WorldEvent]:
+        params = WhisperParams.model_validate(action.data.parameters)
+        listener_ids = list(dict.fromkeys(params.target_character_ids))
+        if not listener_ids:
+            raise AetherValidationError("Whisper requires at least one addressee.")
+        self._require_colocated_many(world, action.actor_id, listener_ids)
+
+        event = WorldEvent(
+            world_id=world.id,
+            actor_id=action.actor_id,
+            target_ids=listener_ids,
+            data=WorldActionEvent(
+                type="dialogue_whispered",
+                module="dialogue",
+                attributes={
+                    "speaker_id": action.actor_id,
+                    "listener_ids": listener_ids,
+                    "topic": params.topic,
+                    "truthfulness": params.truthfulness,
+                    "private": True,
+                },
+            ),
+            witnessed_by=self._private_witnesses(action.actor_id, listener_ids),
+        )
+        return [event]
+
+    def refuse(self, world: World, action: Action) -> List[WorldEvent]:
+        params = RefuseParams.model_validate(action.data.parameters)
+        self._require_actor_located(world, action.actor_id)
+
+        if params.questioner_id:
+            self._require_colocated(world, action.actor_id, params.questioner_id)
+            listener_ids = [params.questioner_id]
+            addressed_room = False
+        else:
+            listener_ids = self._crowd_at_location(world, action.actor_id)
+            addressed_room = True
+
+        event = WorldEvent(
+            world_id=world.id,
+            actor_id=action.actor_id,
+            target_ids=listener_ids,
+            data=WorldActionEvent(
+                type="dialogue_refused",
+                module="dialogue",
+                attributes={
+                    "speaker_id": action.actor_id,
+                    "questioner_id": params.questioner_id,
+                    "listener_ids": listener_ids,
+                    "topic": params.topic,
+                    "addressed_room": addressed_room,
                 },
             ),
             witnessed_by=world.determine_witnesses(action.actor_id),
@@ -340,6 +595,7 @@ class DialogueModule(AetherModule):
                     "listener_ids": listener_ids,
                     "addressed_crowd": addressed_crowd,
                     "topic": params.topic,
+                    "truthfulness": params.truthfulness,
                 },
             ),
             witnessed_by=world.determine_witnesses(action.actor_id),
@@ -373,6 +629,7 @@ class DialogueModule(AetherModule):
                     "listener_ids": listener_ids,
                     "addressed_crowd": addressed_crowd,
                     "topic": params.topic,
+                    "truthfulness": params.truthfulness,
                 },
             ),
             witnessed_by=world.determine_witnesses(action.actor_id),
@@ -439,6 +696,20 @@ class DialogueModule(AetherModule):
             if not listener_name
             else f"{speaker_name} spoke to {listener_name} about {attrs.topic}."
         )
+        tags = ["dialogue", "dialogue_spoken", attrs.topic.lower()[:40]]
+        perspective, summary, tags, emotion, importance, emotional_weight = (
+            self._color_speaker_truth(
+                is_speaker=character_id == attrs.speaker_id,
+                truthfulness=attrs.truthfulness,
+                topic=attrs.topic,
+                perspective=perspective,
+                summary=summary,
+                tags=tags,
+                emotion=emotion,
+                importance=importance,
+                emotional_weight=emotional_weight,
+            )
+        )
 
         return Perception(
             character_id=character_id,
@@ -448,7 +719,7 @@ class DialogueModule(AetherModule):
             importance=importance,
             emotional_weight=emotional_weight,
             emotion=emotion,
-            tags=["dialogue", "dialogue_spoken", attrs.topic.lower()[:40]],
+            tags=tags,
             participant_ids=[
                 value
                 for value in [attrs.speaker_id, attrs.listener_id]
@@ -509,15 +780,31 @@ class DialogueModule(AetherModule):
             emotion = None
             emotional_weight = 0.2
 
+        summary = f"{speaker_name} asked {audience} about {attrs.topic}."
+        tags = ["dialogue", "question_asked", attrs.topic.lower()[:40]]
+        perspective, summary, tags, emotion, importance, emotional_weight = (
+            self._color_speaker_truth(
+                is_speaker=character_id == attrs.speaker_id,
+                truthfulness=attrs.truthfulness,
+                topic=attrs.topic,
+                perspective=perspective,
+                summary=summary,
+                tags=tags,
+                emotion=emotion,
+                importance=importance,
+                emotional_weight=emotional_weight,
+            )
+        )
+
         return Perception(
             character_id=character_id,
             event_id=event.id,
-            summary=f"{speaker_name} asked {audience} about {attrs.topic}.",
+            summary=summary,
             perspective=perspective,
             importance=importance,
             emotional_weight=emotional_weight,
             emotion=emotion,
-            tags=["dialogue", "question_asked", attrs.topic.lower()[:40]],
+            tags=tags,
             participant_ids=[attrs.speaker_id, *attrs.listener_ids],
             location_ids=location_ids,
         )
@@ -565,15 +852,153 @@ class DialogueModule(AetherModule):
             emotion = None
             emotional_weight = 0.15
 
+        summary = f"{speaker_name} answered {audience} about {attrs.topic}."
+        tags = ["dialogue", "question_answered", attrs.topic.lower()[:40]]
+        perspective, summary, tags, emotion, importance, emotional_weight = (
+            self._color_speaker_truth(
+                is_speaker=character_id == attrs.speaker_id,
+                truthfulness=attrs.truthfulness,
+                topic=attrs.topic,
+                perspective=perspective,
+                summary=summary,
+                tags=tags,
+                emotion=emotion,
+                importance=importance,
+                emotional_weight=emotional_weight,
+            )
+        )
+
         return Perception(
             character_id=character_id,
             event_id=event.id,
-            summary=f"{speaker_name} answered {audience} about {attrs.topic}.",
+            summary=summary,
             perspective=perspective,
             importance=importance,
             emotional_weight=emotional_weight,
             emotion=emotion,
-            tags=["dialogue", "question_answered", attrs.topic.lower()[:40]],
+            tags=tags,
+            participant_ids=[
+                value
+                for value in [attrs.speaker_id, attrs.questioner_id, *attrs.listener_ids]
+                if value
+            ],
+            location_ids=location_ids,
+        )
+
+    def perceive_dialogue_whispered(
+        self,
+        world: World,
+        character_id: str,
+        event: WorldEvent,
+    ) -> Optional[Perception]:
+        attrs = DialogueWhisperedAttributes.model_validate(event.data.attributes)
+        if character_id not in event.witnessed_by and character_id not in (
+            attrs.speaker_id,
+            *attrs.listener_ids,
+        ):
+            return None
+
+        speaker_name = world.describe_character(attrs.speaker_id)
+        audience = self._listener_names(world, attrs.listener_ids)
+        location_ids = []
+        speaker = world.characters.get(attrs.speaker_id)
+        if speaker is not None and speaker.state.location_id:
+            location_ids.append(speaker.state.location_id)
+
+        if character_id == attrs.speaker_id:
+            perspective = f"I whispered to {audience} about {attrs.topic}."
+            importance = 0.72
+            emotion = "caution"
+            emotional_weight = 0.35
+        elif character_id in attrs.listener_ids:
+            perspective = f"{speaker_name} whispered to me about {attrs.topic}."
+            importance = 0.84
+            emotion = "attention"
+            emotional_weight = 0.45
+        else:
+            return None
+
+        summary = f"{speaker_name} whispered to {audience} about {attrs.topic}."
+        tags = ["dialogue", "dialogue_whispered", "private", attrs.topic.lower()[:40]]
+        perspective, summary, tags, emotion, importance, emotional_weight = (
+            self._color_speaker_truth(
+                is_speaker=character_id == attrs.speaker_id,
+                truthfulness=attrs.truthfulness,
+                topic=attrs.topic,
+                perspective=perspective,
+                summary=summary,
+                tags=tags,
+                emotion=emotion,
+                importance=importance,
+                emotional_weight=emotional_weight,
+            )
+        )
+
+        return Perception(
+            character_id=character_id,
+            event_id=event.id,
+            summary=summary,
+            perspective=perspective,
+            importance=importance,
+            emotional_weight=emotional_weight,
+            emotion=emotion,
+            tags=tags,
+            participant_ids=[attrs.speaker_id, *attrs.listener_ids],
+            location_ids=location_ids,
+        )
+
+    def perceive_dialogue_refused(
+        self,
+        world: World,
+        character_id: str,
+        event: WorldEvent,
+    ) -> Optional[Perception]:
+        attrs = DialogueRefusedAttributes.model_validate(event.data.attributes)
+        speaker_name = world.describe_character(attrs.speaker_id)
+        if attrs.addressed_room:
+            audience = "the room"
+        elif attrs.questioner_id:
+            audience = world.describe_character(attrs.questioner_id)
+        else:
+            audience = self._listener_names(world, attrs.listener_ids)
+
+        location_ids = []
+        speaker = world.characters.get(attrs.speaker_id)
+        if speaker is not None and speaker.state.location_id:
+            location_ids.append(speaker.state.location_id)
+
+        if character_id == attrs.speaker_id:
+            perspective = f"I refused to answer {audience} about {attrs.topic}."
+            summary = f"I refused to answer about {attrs.topic}."
+            importance = 0.82
+            emotion = "defiance"
+            emotional_weight = 0.5
+        elif attrs.questioner_id and character_id == attrs.questioner_id:
+            perspective = (
+                f"{speaker_name} refused to answer me about {attrs.topic}."
+            )
+            summary = f"{speaker_name} refused to answer about {attrs.topic}."
+            importance = 0.86
+            emotion = "suspicion"
+            emotional_weight = 0.55
+        else:
+            perspective = (
+                f"I heard {speaker_name} refuse to answer about {attrs.topic}."
+            )
+            summary = f"{speaker_name} refused to answer about {attrs.topic}."
+            importance = 0.6
+            emotion = None
+            emotional_weight = 0.25
+
+        return Perception(
+            character_id=character_id,
+            event_id=event.id,
+            summary=summary,
+            perspective=perspective,
+            importance=importance,
+            emotional_weight=emotional_weight,
+            emotion=emotion,
+            tags=["dialogue", "dialogue_refused", "refuse", attrs.topic.lower()[:40]],
             participant_ids=[
                 value
                 for value in [attrs.speaker_id, attrs.questioner_id, *attrs.listener_ids]

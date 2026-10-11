@@ -9,13 +9,28 @@ from aether.domain.sessions import Session
 from aether.domain.world import World
 
 
+# Aggregates persisted in their own tables — not embedded in worlds.data.
+_WORLD_DOCUMENT_EXCLUDE = {"engine", "characters", "sessions", "events"}
+
+
 def serialize_world(world: World) -> dict[str, Any]:
-    """JSON-ready World payload (excludes non-persistent runtime engine)."""
-    return world.model_dump(mode="json", exclude={"engine"})
+    """
+    JSON-ready World shell for the worlds table.
+
+    Characters, sessions, and events are stored in dedicated tables and
+    rehydrated on load — they are not embedded in this document.
+    """
+    return world.model_dump(mode="json", exclude=_WORLD_DOCUMENT_EXCLUDE)
 
 
 def deserialize_world(data: dict[str, Any]) -> World:
-    return World.model_validate(data)
+    # Ignore legacy embedded aggregates if present in older rows.
+    payload = {
+        key: value
+        for key, value in data.items()
+        if key not in _WORLD_DOCUMENT_EXCLUDE
+    }
+    return World.model_validate(payload)
 
 
 def serialize_character(character: Character) -> dict[str, Any]:

@@ -1,0 +1,61 @@
+{
+  "name": "Gated Study",
+  "description": "A hall, a locked study, and a letter hidden in a chest.",
+  "start_minute": 480,
+  "locations": [
+    {
+      "id": "hall",
+      "name": "Hall",
+      "description": "A plain hall with a locked door at the far end.",
+      "connections": []
+    },
+    {
+      "id": "study",
+      "name": "Study",
+      "description": "A private study.",
+      "connections": []
+    }
+  ],
+  "characters": [
+    {
+      "id": "player",
+      "name": "Visitor",
+      "role": "Player",
+      "location": "hall"
+    }
+  ],
+  "items": [
+    {
+      "id": "brass-key",
+      "name": "Brass Key",
+      "description": "Fits the study door.",
+      "location": "hall",
+      "tags": ["key"]
+    },
+    {
+      "id": "chest",
+      "name": "Chest",
+      "description": "A closed wooden chest.",
+      "location": "study",
+      "is_container": true,
+      "container_open": false
+    },
+    {
+      "id": "letter",
+      "name": "Sealed Letter",
+      "description": "A clue left in the chest.",
+      "inside": "chest",
+      "hidden": true,
+      "tags": ["clue"]
+    }
+  ],
+  "passages": [
+    {
+      "from_location": "hall",
+      "to_location": "study",
+      "locked": true,
+      "open": true,
+      "key": "brass-key"
+    }
+  ]
+}

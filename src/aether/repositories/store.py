@@ -43,13 +43,19 @@ class PostgresStore(Store):
     """
 
     def __init__(self, *, apply_migrations: bool = False) -> None:
-        from aether.repositories.db import apply_schema
-        from aether.repositories.postgres import (
-            PostgresCharacterRepository,
-            PostgresEventRepository,
-            PostgresSessionRepository,
-            PostgresWorldRepository,
-        )
+        try:
+            from aether.repositories.db import apply_schema
+            from aether.repositories.postgres import (
+                PostgresCharacterRepository,
+                PostgresEventRepository,
+                PostgresSessionRepository,
+                PostgresWorldRepository,
+            )
+        except ImportError as exc:
+            raise ImportError(
+                "PostgresStore requires the postgres extras. "
+                'Install with: pip install "aether-sim[postgres]"'
+            ) from exc
 
         if apply_migrations:
             apply_schema()

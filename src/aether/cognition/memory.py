@@ -1,9 +1,11 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 from aether.components.shared import utc_now, new_id
+
+PinnedKind = Literal["name", "agreement", "host", "fact"]
 
 
 class Message(BaseModel):
@@ -119,6 +121,53 @@ class MemoryRecord(BaseModel):
     )
 
 
+class PinnedFact(BaseModel):
+    """
+    Host- or character-pinned fact that stays in prompts without the episodic log.
+    """
+
+    id: str = Field(
+        default_factory=lambda: new_id("pin"),
+        description="Unique identifier for this pinned fact.",
+    )
+
+    key: str = Field(
+        default="",
+        description="Stable key such as name or agreement. Re-pinning the same key replaces it.",
+    )
+
+    text: str = Field(
+        ...,
+        description="Fact text injected into recall packs.",
+    )
+
+    kind: PinnedKind = Field(
+        default="host",
+        description="Fact category: name, agreement, host, or fact.",
+    )
+
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        description="UTC timestamp when this fact was pinned.",
+    )
+
+
+class RecallPack(BaseModel):
+    """
+    Prompt-sized recall: pins and lore always, episodic lines capped.
+    """
+
+    pinned: List[str] = Field(default_factory=list)
+    semantic: List[str] = Field(default_factory=list)
+    recent: List[str] = Field(default_factory=list)
+    goal_relevant: List[str] = Field(default_factory=list)
+    relationship_colored: List[str] = Field(default_factory=list)
+    episodic_lines: List[str] = Field(
+        default_factory=list,
+        description="Deduped recent, goal, relationship, and query lines under the cap.",
+    )
+
+
 class MemorySummary(BaseModel):
     """
     Consolidated semantic memory created from multiple episodic memories.
@@ -174,6 +223,16 @@ class Memory(BaseModel):
     semantic: List[MemorySummary] = Field(
         default_factory=list,
         description="Consolidated higher-level memories derived from episodes.",
+    )
+
+    pinned: List[PinnedFact] = Field(
+        default_factory=list,
+        description="Pinned facts that stay available to prompts.",
+    )
+
+    consolidated_ids: List[str] = Field(
+        default_factory=list,
+        description="Episodic memory IDs already folded into semantic lore.",
     )
 
     def add_working(
@@ -292,16 +351,119 @@ class Memory(BaseModel):
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return [memory for _, memory in scored[:limit]]
 
+    def pin(
+        self,
+        text: str,
+        *,
+        key: str = "",
+        kind: PinnedKind = "host",
+    ) -> PinnedFact:
+        """Pin a fact. A non-empty key replaces any earlier fact with that key."""
+        cleaned = (text or "").strip()
+        if not cleaned:
+            raise ValueError("Pinned fact text is empty.")
+        if key:
+            self.pinned = [fact for fact in self.pinned if fact.key != key]
+        fact = PinnedFact(key=key, text=cleaned, kind=kind)
+        self.pinned.append(fact)
+        return fact
+
     def consolidate(self, limit: int = 5) -> Optional[MemorySummary]:
-        if not self.episodic:
+        """
+        Fold unconsolidated episodic memories into one semantic statement.
+
+        Already-consolidated episodes are skipped, so repeated calls do not
+        duplicate lore.
+        """
+        done = set(self.consolidated_ids)
+        pending = [memory for memory in self.episodic if memory.id not in done]
+        if not pending:
             return None
 
-        recent = self.episodic[-limit:]
-
+        ranked = sorted(
+            pending,
+            key=lambda memory: (memory.importance, memory.created_at),
+            reverse=True,
+        )
+        chosen = ranked[: max(1, limit)]
+        chosen.sort(key=lambda memory: memory.created_at)
+        confidence = sum(memory.confidence for memory in chosen) / len(chosen)
         summary = MemorySummary(
-            statement="; ".join(memory.summary for memory in recent),
-            source_memory_ids=[memory.id for memory in recent],
+            statement="; ".join(memory.summary for memory in chosen),
+            source_memory_ids=[memory.id for memory in chosen],
+            confidence=min(1.0, confidence),
+        )
+        self.semantic.append(summary)
+        self.consolidated_ids.extend(memory.id for memory in chosen)
+        return summary
+
+    def pack_recall(
+        self,
+        query: str,
+        *,
+        goals: Optional[List[str]] = None,
+        relationship_ids: Optional[List[str]] = None,
+        location_ids: Optional[List[str]] = None,
+        participant_ids: Optional[List[str]] = None,
+        extra_pinned: Optional[List[str]] = None,
+        limit: int = 4,
+    ) -> RecallPack:
+        """
+        Build a prompt pack: every pin, recent lore, then a short episodic slice.
+
+        Episodic lines stay capped so a long session does not dump the full log.
+        """
+        pinned = [*(extra_pinned or []), *[fact.text for fact in self.pinned]]
+        semantic = [item.statement for item in self.semantic[-4:]]
+        recent_records = list(self.episodic[-3:])
+        recent = [memory.perspective for memory in recent_records]
+
+        goal_hits: List[MemoryRecord] = []
+        goal_text = " ".join(goal for goal in (goals or []) if goal).strip()
+        if goal_text:
+            goal_hits = self.search(goal_text, limit=3)
+
+        rel_ids = [value for value in (relationship_ids or []) if value]
+        rel_hits: List[MemoryRecord] = []
+        if rel_ids:
+            rel_set = set(rel_ids)
+            rel_hits = [
+                memory
+                for memory in self.search(
+                    query or goal_text,
+                    participant_ids=rel_ids,
+                    limit=8,
+                )
+                if rel_set & set(memory.participant_ids)
+            ][:3]
+
+        query_hits = self.search(
+            query,
+            limit=limit,
+            location_ids=location_ids,
+            participant_ids=participant_ids,
         )
 
-        self.semantic.append(summary)
-        return summary
+        ordered: List[MemoryRecord] = []
+        seen: set[str] = set()
+
+        def _take(records: List[MemoryRecord]) -> None:
+            for memory in records:
+                if memory.id in seen:
+                    continue
+                seen.add(memory.id)
+                ordered.append(memory)
+
+        _take(recent_records)
+        _take(goal_hits)
+        _take(rel_hits)
+        _take(query_hits)
+
+        return RecallPack(
+            pinned=pinned,
+            semantic=semantic,
+            recent=recent,
+            goal_relevant=[memory.perspective for memory in goal_hits],
+            relationship_colored=[memory.perspective for memory in rel_hits],
+            episodic_lines=[memory.perspective for memory in ordered[:limit]],
+        )

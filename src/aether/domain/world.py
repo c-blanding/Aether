@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -60,6 +60,57 @@ class Location(BaseModel):
     )
 
 
+class Passage(BaseModel):
+    """A door or gate between two locations."""
+
+    id: str = Field(
+        default_factory=lambda: new_id("pass"),
+        description="Unique identifier for this passage.",
+    )
+    from_location_id: str
+    to_location_id: str
+    locked: bool = False
+    is_open: bool = True
+    key_item_id: Optional[str] = None
+    bidirectional: bool = True
+
+    def links(self, left_id: str, right_id: str) -> bool:
+        pair = {left_id, right_id}
+        endpoints = {self.from_location_id, self.to_location_id}
+        if self.bidirectional:
+            return pair == endpoints
+        return left_id == self.from_location_id and right_id == self.to_location_id
+
+
+class WorldClock(BaseModel):
+    """Simple in-world clock advanced by the time module."""
+
+    minute_of_day: int = Field(default=8 * 60, ge=0)
+    day: int = Field(default=1, ge=1)
+
+    def advance(self, minutes: int) -> None:
+        if minutes < 0:
+            raise AetherValidationError("Cannot advance the clock backwards.")
+        total = self.minute_of_day + minutes
+        self.day += total // (24 * 60)
+        self.minute_of_day = total % (24 * 60)
+
+
+class AgendaEntry(BaseModel):
+    """Where a character is expected to be during a span of the day."""
+
+    id: str = Field(default_factory=lambda: new_id("agenda"))
+    character_id: str
+    location_id: str
+    start_minute: int = Field(ge=0, le=24 * 60)
+    end_minute: int = Field(ge=0, le=24 * 60)
+
+    def covers(self, minute_of_day: int) -> bool:
+        if self.start_minute <= self.end_minute:
+            return self.start_minute <= minute_of_day < self.end_minute
+        return minute_of_day >= self.start_minute or minute_of_day < self.end_minute
+
+
 class ItemState(BaseModel):
     """
     Mutable placement/ownership state for an item.
@@ -73,6 +124,16 @@ class ItemState(BaseModel):
     owner_id: Optional[str] = Field(
         default=None,
         description="ID of the character who owns this item, if it is held.",
+    )
+
+    container_id: Optional[str] = Field(
+        default=None,
+        description="ID of the container item this item is inside, if any.",
+    )
+
+    consumed: bool = Field(
+        default=False,
+        description="Whether use_item has consumed this item.",
     )
 
     def is_owned(self) -> bool:
@@ -114,6 +175,31 @@ class Item(BaseModel):
     tags: List[str] = Field(
         default_factory=list,
         description="Optional tags for modules and retrieval (e.g. clue, key).",
+    )
+
+    is_container: bool = Field(
+        default=False,
+        description="Whether other items can be placed inside this item.",
+    )
+
+    container_open: bool = Field(
+        default=False,
+        description="Whether a container currently exposes its contents.",
+    )
+
+    use_mode: Literal["keep", "consume", "transform"] = Field(
+        default="keep",
+        description="What happens to the item when it is used.",
+    )
+
+    transform_name: Optional[str] = Field(
+        default=None,
+        description="Display name applied when use_mode is transform.",
+    )
+
+    transform_description: Optional[str] = Field(
+        default=None,
+        description="Description applied when use_mode is transform.",
     )
 
     state: ItemState = Field(
@@ -228,6 +314,21 @@ class World(BaseModel):
         description="Mapping of item ID to Item.",
     )
 
+    passages: Dict[str, Passage] = Field(
+        default_factory=dict,
+        description="Doors and gates between locations.",
+    )
+
+    clock: WorldClock = Field(
+        default_factory=WorldClock,
+        description="In-world clock advanced by wait.",
+    )
+
+    agendas: List[AgendaEntry] = Field(
+        default_factory=list,
+        description="Character schedules consulted when time passes.",
+    )
+
     sessions: Dict[str, Session] = Field(
         default_factory=dict,
         description="Mapping of session ID to Session aggregate.",
@@ -323,6 +424,12 @@ class World(BaseModel):
         *,
         hidden: bool = False,
         tags: Optional[List[str]] = None,
+        container_id: Optional[str] = None,
+        is_container: bool = False,
+        container_open: bool = False,
+        use_mode: Literal["keep", "consume", "transform"] = "keep",
+        transform_name: Optional[str] = None,
+        transform_description: Optional[str] = None,
     ) -> Item:
         if location_id is not None and location_id not in self.locations:
             raise AetherValidationError(
@@ -334,9 +441,21 @@ class World(BaseModel):
                 f"Owner character does not exist: {owner_id}"
             )
 
-        if location_id is not None and owner_id is not None:
+        if container_id is not None:
+            container = self.items.get(container_id)
+            if container is None or not container.is_container:
+                raise AetherValidationError(
+                    f"Container does not exist: {container_id}"
+                )
+
+        placements = [
+            value
+            for value in (location_id, owner_id, container_id)
+            if value is not None
+        ]
+        if len(placements) > 1:
             raise AetherValidationError(
-                "Item cannot have both a location and an owner."
+                "Item cannot have more than one of location, owner, or container."
             )
 
         item = Item(
@@ -344,9 +463,15 @@ class World(BaseModel):
             description=description,
             hidden=hidden,
             tags=list(tags or []),
+            is_container=is_container,
+            container_open=container_open,
+            use_mode=use_mode,
+            transform_name=transform_name,
+            transform_description=transform_description,
             state=ItemState(
                 location_id=location_id,
                 owner_id=owner_id,
+                container_id=container_id,
             ),
         )
 
@@ -377,6 +502,7 @@ class World(BaseModel):
         self.sessions[session.id] = session
         self.state.active_session_ids.append(session.id)
         session.sync_tip(self)
+        session.capture_baseline(self)
 
         return session
 
@@ -427,3 +553,85 @@ class World(BaseModel):
             for character in self.characters.values()
             if character.state.location_id == actor_location
         ]
+
+    def create_passage(
+        self,
+        from_location_id: str,
+        to_location_id: str,
+        *,
+        locked: bool = False,
+        is_open: bool = True,
+        key_item_id: Optional[str] = None,
+        bidirectional: bool = True,
+    ) -> Passage:
+        if from_location_id not in self.locations:
+            raise AetherValidationError(
+                f"Location does not exist: {from_location_id}"
+            )
+        if to_location_id not in self.locations:
+            raise AetherValidationError(
+                f"Location does not exist: {to_location_id}"
+            )
+        if key_item_id is not None and key_item_id not in self.items:
+            raise AetherValidationError(f"Key item does not exist: {key_item_id}")
+
+        self.connect_locations(
+            from_location_id,
+            to_location_id,
+            bidirectional=bidirectional,
+        )
+        passage = Passage(
+            from_location_id=from_location_id,
+            to_location_id=to_location_id,
+            locked=locked,
+            is_open=is_open,
+            key_item_id=key_item_id,
+            bidirectional=bidirectional,
+        )
+        self.passages[passage.id] = passage
+        return passage
+
+    def passage_between(self, left_id: str, right_id: str) -> Optional[Passage]:
+        for passage in self.passages.values():
+            if passage.links(left_id, right_id):
+                return passage
+        return None
+
+    def passage_block_reason(self, left_id: str, right_id: str) -> Optional[str]:
+        passage = self.passage_between(left_id, right_id)
+        if passage is None:
+            return None
+        if passage.locked:
+            return "The way is locked."
+        if not passage.is_open:
+            return "The way is closed."
+        return None
+
+    def add_agenda(
+        self,
+        character_id: str,
+        location_id: str,
+        start_minute: int,
+        end_minute: int,
+    ) -> AgendaEntry:
+        if character_id not in self.characters:
+            raise AetherValidationError(f"Character does not exist: {character_id}")
+        if location_id not in self.locations:
+            raise AetherValidationError(f"Location does not exist: {location_id}")
+        entry = AgendaEntry(
+            character_id=character_id,
+            location_id=location_id,
+            start_minute=start_minute,
+            end_minute=end_minute,
+        )
+        self.agendas.append(entry)
+        return entry
+
+    def active_agenda(self, character_id: str) -> Optional[AgendaEntry]:
+        minute = self.clock.minute_of_day
+        matches = [
+            entry
+            for entry in self.agendas
+            if entry.character_id == character_id and entry.covers(minute)
+        ]
+        return matches[-1] if matches else None

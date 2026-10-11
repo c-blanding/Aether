@@ -1,0 +1,78 @@
+{
+  "name": "Blackwood Manor",
+  "description": "A mystery mansion full of secrets.",
+  "locations": [
+    {
+      "id": "library",
+      "name": "Library",
+      "description": "A quiet room filled with old books.",
+      "connections": ["hall"]
+    },
+    {
+      "id": "hall",
+      "name": "Hall",
+      "description": "A long hallway connecting the manor rooms.",
+      "connections": ["library", "study"]
+    },
+    {
+      "id": "study",
+      "name": "Study",
+      "description": "A private study with a heavy oak desk.",
+      "connections": ["hall"]
+    }
+  ],
+  "characters": [
+    {
+      "id": "detective",
+      "name": "Detective",
+      "role": "Player",
+      "location": "library"
+    },
+    {
+      "id": "arthur",
+      "name": "Arthur",
+      "role": "Butler",
+      "background": "Arthur has served the family for thirty years.",
+      "location": "library",
+      "personality": {
+        "traits": ["loyal", "secretive", "formal"],
+        "speaking_style": "Formal, reserved, and carefully worded."
+      },
+      "goals": [
+        {
+          "description": "Protect the family reputation.",
+          "priority": 90
+        }
+      ],
+      "beliefs": [
+        {
+          "proposition": "No one saw Arthur enter the study.",
+          "believed_value": "true",
+          "confidence": 0.8
+        }
+      ],
+      "memories": [
+        {
+          "summary": "Arthur entered the study at midnight and found the victim already dead.",
+          "importance": 0.95,
+          "emotion": "fear"
+        }
+      ]
+    }
+  ],
+  "items": [
+    {
+      "name": "Old Key",
+      "description": "A brass key with strange initials engraved on it.",
+      "location": "library",
+      "tags": ["key", "clue"]
+    },
+    {
+      "name": "Torn Note",
+      "description": "A scrap that reads: 'midnight — do not trust the butler'.",
+      "location": "study",
+      "hidden": true,
+      "tags": ["clue", "note"]
+    }
+  ]
+}

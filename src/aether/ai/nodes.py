@@ -55,6 +55,46 @@ def _serialize_event(event: Any) -> dict[str, Any]:
     return dict(event)
 
 
+def _session_pins(session: Any) -> list[str]:
+    if session is None:
+        return []
+    return [fact.text for fact in getattr(session, "pinned_facts", []) or []]
+
+
+def _recall_pack(character: Any, query: str, session: Any, location_id: str | None):
+    return character.recall_pack(
+        query,
+        location_ids=[location_id] if location_id else None,
+        extra_pinned=_session_pins(session),
+        limit=4,
+    )
+
+
+def _item_is_visible(world: Any, item: Any, actor: Any, location_id: str | None) -> bool:
+    if getattr(item.state, "consumed", False):
+        return False
+    container_id = getattr(item.state, "container_id", None)
+    if container_id:
+        container = world.items.get(container_id)
+        if container is None or not container.container_open:
+            return False
+        container_here = container.state.location_id == location_id or (
+            actor is not None and container.state.owner_id == actor.id
+        )
+        if not container_here:
+            return False
+        if getattr(item, "hidden", False):
+            return False
+        return True
+    if getattr(item, "hidden", False) and item.state.owner_id != (
+        actor.id if actor else None
+    ):
+        return False
+    return item.state.location_id == location_id or (
+        actor is not None and item.state.owner_id == actor.id
+    )
+
+
 def _relationship_brief(character: Any, target_id: str) -> RelationshipBrief | None:
     rel = character.relationships.relationships.get(target_id)
     if rel is None:
@@ -74,6 +114,7 @@ def _build_context(
     actor_id: str,
     message: str,
     scene_summary: SceneSummary | None = None,
+    session: Any = None,
 ) -> ActOneContext:
     actor = world.characters.get(actor_id)
     location_id = actor.state.location_id if actor is not None else None
@@ -97,15 +138,9 @@ def _build_context(
                     b.proposition
                     for b in list(character.knowledge.beliefs.values())[:5]
                 ],
-                memories=[
-                    m.perspective
-                    for m in character.recall(
-                        message,
-                        location_ids=[location_id] if location_id else None,
-                        participant_ids=[actor_id] if actor_id else None,
-                        limit=5,
-                    )
-                ],
+                memories=_planner_memory_lines(
+                    _recall_pack(character, message, session, location_id)
+                ),
                 personality=character.personality,
                 relationship_to_actor=(
                     _relationship_brief(character, actor_id)
@@ -117,22 +152,17 @@ def _build_context(
 
     nearby_items: list[VisibleItemBrief] = []
     for item in world.items.values():
-        if getattr(item, "hidden", False) and item.state.owner_id != (
-            actor.id if actor else None
-        ):
+        if not _item_is_visible(world, item, actor, location_id):
             continue
-        if item.state.location_id == location_id or (
-            actor is not None and item.state.owner_id == actor.id
-        ):
-            nearby_items.append(
-                VisibleItemBrief(
-                    id=item.id,
-                    name=item.name,
-                    description=item.description,
-                    location_id=item.state.location_id,
-                    owner_id=item.state.owner_id,
-                )
+        nearby_items.append(
+            VisibleItemBrief(
+                id=item.id,
+                name=item.name,
+                description=item.description,
+                location_id=item.state.location_id,
+                owner_id=item.state.owner_id,
             )
+        )
 
     connected: list[ConnectedLocationBrief] = []
     if location is not None:
@@ -192,6 +222,7 @@ def gather_context(
         state.get("actor_id") or "",
         state.get("message") or "",
         scene_summary=summary,
+        session=session,
     )
     return {
         "context": context.model_dump(mode="json"),
@@ -409,6 +440,7 @@ def execute_action(
         player_id,
         state.get("message") or "",
         scene_summary=summary,
+        session=session,
     )
     npc_actions_taken = int(state.get("npc_actions_taken") or 0)
     npc_acted_ids = list(state.get("npc_acted_ids") or [])
@@ -424,6 +456,10 @@ def execute_action(
         delta.model_dump(mode="json")
         for delta in (result.relationship_deltas or [])
     ]
+    callbacks = cfg.get("callbacks")
+    if callbacks is not None and getattr(callbacks, "on_event", None):
+        for event in result.events:
+            callbacks.on_event(event)
 
     return {
         "last_rejection": None,
@@ -484,10 +520,19 @@ def _collect_character_ids(events: list[dict[str, Any]]) -> set[str]:
     return character_ids
 
 
+def _planner_memory_lines(pack: Any) -> list[str]:
+    return [
+        *[f"[pinned] {text}" for text in pack.pinned],
+        *[f"[lore] {text}" for text in pack.semantic],
+        *pack.episodic_lines,
+    ]
+
+
 def _character_briefs(
     world: Any,
     character_ids: set[str],
     recall_query: str,
+    session: Any = None,
 ) -> list[CharacterBrief]:
     briefs: list[CharacterBrief] = []
     for character_id in character_ids:
@@ -495,6 +540,12 @@ def _character_briefs(
         if character is None:
             continue
         location = world.locations.get(character.state.location_id or "")
+        pack = _recall_pack(
+            character,
+            recall_query,
+            session,
+            character.state.location_id,
+        )
         briefs.append(
             CharacterBrief(
                 id=character.id,
@@ -521,20 +572,9 @@ def _character_briefs(
                     )
                     for b in list(character.knowledge.beliefs.values())[:8]
                 ],
-                memories=[
-                    MemoryBrief(
-                        perspective=m.perspective,
-                        importance=m.importance,
-                        emotion=m.emotion,
-                    )
-                    for m in character.recall(
-                        recall_query,
-                        location_ids=[character.state.location_id]
-                        if character.state.location_id
-                        else None,
-                        limit=8,
-                    )
-                ],
+                memories=_memory_briefs(pack),
+                pinned_facts=list(pack.pinned),
+                semantic_memories=list(pack.semantic),
                 relationships=[
                     RelationshipBrief(
                         target_character_id=rel.target_character_id,
@@ -550,6 +590,37 @@ def _character_briefs(
             )
         )
     return briefs
+
+
+def _memory_briefs(pack: Any) -> list[MemoryBrief]:
+    briefs: list[MemoryBrief] = [
+        MemoryBrief(perspective=text, importance=1.0, emotion=None, source="pinned")
+        for text in pack.pinned
+    ]
+    briefs.extend(
+        MemoryBrief(perspective=text, importance=0.8, emotion=None, source="semantic")
+        for text in pack.semantic
+    )
+    briefs.extend(
+        MemoryBrief(perspective=text, importance=0.5, emotion=None, source="episodic")
+        for text in pack.episodic_lines
+    )
+    return briefs
+
+
+def _chunk_text(chunk: Any) -> str:
+    content = getattr(chunk, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(str(block.get("text") or ""))
+        return "".join(parts)
+    return str(content or "")
 
 
 def _scene_payload(
@@ -582,14 +653,7 @@ def _scene_payload(
             location_id=item.state.location_id,
         )
         for item in world.items.values()
-        if (
-            not getattr(item, "hidden", False)
-            or (actor is not None and item.state.owner_id == actor.id)
-        )
-        and (
-            item.state.location_id == location_id
-            or (actor is not None and item.state.owner_id == actor.id)
-        )
+        if _item_is_visible(world, item, actor, location_id)
     ]
 
     return ScenePayload(
@@ -625,6 +689,7 @@ def _render_narrative(
     characters: list[CharacterBrief],
     tone: PresentationTone | None = None,
     scene_summary: SceneSummary | None = None,
+    callbacks: Any = None,
 ) -> str:
     tone = tone or PresentationTone()
     summary = scene_summary or scene.scene_summary
@@ -637,17 +702,31 @@ def _render_narrative(
         tone=tone.model_dump_json(indent=2),
     )
     system = NARRATIVE_SYSTEM + style_system_suffix(tone.style)
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": prompt},
+    ]
+    on_delta = getattr(callbacks, "on_narrative_delta", None) if callbacks else None
+    if on_delta is not None and hasattr(model, "stream"):
+        # Events are already committed before this node runs.
+        parts: list[str] = []
+        for chunk in model.stream(messages):
+            text = _chunk_text(chunk)
+            if not text:
+                continue
+            on_delta(text)
+            parts.append(text)
+        return "".join(parts).strip()
+
     structured = model.with_structured_output(
         GeneratedNarrative,
         method="function_calling",
     )
-    generated: GeneratedNarrative = structured.invoke(
-        [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ]
-    )
-    return (generated.narrative or "").strip()
+    generated: GeneratedNarrative = structured.invoke(messages)
+    narrative = (generated.narrative or "").strip()
+    if on_delta is not None and narrative:
+        on_delta(narrative)
+    return narrative
 
 
 def _render_dialogue(
@@ -660,6 +739,7 @@ def _render_dialogue(
     narrative: str,
     style: PresentationStyle | None = None,
     scene_summary: SceneSummary | None = None,
+    callbacks: Any = None,
 ) -> list[dict[str, Any]]:
     style = style or PresentationStyle()
     summary = scene_summary or scene.scene_summary
@@ -683,7 +763,14 @@ def _render_dialogue(
             {"role": "user", "content": prompt},
         ]
     )
-    return [line.model_dump(mode="json") for line in generated.lines]
+    lines = [line.model_dump(mode="json") for line in generated.lines]
+    on_line = getattr(callbacks, "on_dialogue_line", None) if callbacks else None
+    if on_line is not None:
+        from aether.domain.interactions import DialogueLine
+
+        for line in lines:
+            on_line(DialogueLine.model_validate(line))
+    return lines
 
 
 def generate_dialogue(
@@ -694,17 +781,17 @@ def generate_dialogue(
     Host presentation pass: narrative renderer always; dialogue renderer when speaking.
     """
     cfg = _cfg(config)
-    world = cfg["world"]
-    model = cfg.get("model")
     last_events = state.get("last_events") or []
-    message = state.get("message") or ""
-
     if not last_events:
         return {
             "speaking_pending": False,
             "presentation_pending": False,
             "trace_steps": ["generate_dialogue:skip"],
         }
+
+    world = cfg["world"]
+    model = cfg.get("model")
+    message = state.get("message") or ""
 
     speaking_events = [
         event
@@ -737,8 +824,10 @@ def generate_dialogue(
         if character.state.location_id == location_id:
             character_ids.add(character.id)
 
-    briefs = _character_briefs(world, character_ids, recall_query)
     session = cfg.get("session")
+    briefs = _character_briefs(
+        world, character_ids, recall_query, session=session
+    )
     summary = (
         session.scene_summary
         if session is not None
@@ -759,6 +848,7 @@ def generate_dialogue(
         style=style,
     )
 
+    callbacks = cfg.get("callbacks")
     narrative = _render_narrative(
         model=model,
         message=message,
@@ -767,6 +857,7 @@ def generate_dialogue(
         characters=briefs,
         tone=tone,
         scene_summary=summary,
+        callbacks=callbacks,
     )
 
     lines: list[dict[str, Any]] = []
@@ -784,6 +875,7 @@ def generate_dialogue(
             narrative=narrative,
             style=style,
             scene_summary=summary,
+            callbacks=callbacks,
         )
 
     return {

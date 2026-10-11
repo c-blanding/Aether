@@ -339,6 +339,12 @@ class PostgresEventRepository(EventRepository):
         # Return chronological order (oldest -> newest)
         return [deserialize_event(row["data"]) for row in reversed(rows)]
 
+    def delete_by_world(self, world_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM events WHERE world_id = %s", (world_id,))
+            if self._conn is None:
+                conn.commit()
+
 
 def open_postgres_connection(database_url: str | None = None) -> Connection:
     """Open a single dict-row connection (useful for migrations / tests)."""

@@ -10,7 +10,7 @@ from aether.components.capatability import CapabilitySet
 from aether.components.goal import GoalManager, Goal
 from aether.components.inventory import Inventory
 from aether.cognition.knowledge import Knowledge, Belief
-from aether.cognition.memory import Memory, MemoryRecord
+from aether.cognition.memory import Memory, MemoryRecord, PinnedFact, PinnedKind, RecallPack
 from aether.components.planner import Planner
 from aether.domain.relationship import RelationshipManager, Relationship
 
@@ -207,6 +207,46 @@ class Character(BaseModel):
             participant_ids=participant_ids,
             tags=tags,
             min_importance=min_importance,
+        )
+
+    def pin_fact(
+        self,
+        text: str,
+        *,
+        key: str = "",
+        kind: PinnedKind = "host",
+    ) -> PinnedFact:
+        """Pin a fact card that later prompts keep without the full episodic log."""
+        return self.memory.pin(text, key=key, kind=kind)
+
+    def recall_pack(
+        self,
+        query: str,
+        *,
+        goals: Optional[List[str]] = None,
+        relationship_ids: Optional[List[str]] = None,
+        location_ids: Optional[List[str]] = None,
+        participant_ids: Optional[List[str]] = None,
+        extra_pinned: Optional[List[str]] = None,
+        limit: int = 4,
+    ) -> RecallPack:
+        if goals is None:
+            goals = [goal.description for goal in self.goals.prioritize()[:4]]
+        if relationship_ids is None:
+            relationship_ids = [
+                rel.target_character_id
+                for rel in self.relationships.relationships.values()
+                if abs(rel.trust) + abs(rel.affinity) + abs(rel.fear) + abs(rel.suspicion)
+                >= 0.05
+            ]
+        return self.memory.pack_recall(
+            query,
+            goals=goals,
+            relationship_ids=relationship_ids,
+            location_ids=location_ids,
+            participant_ids=participant_ids,
+            extra_pinned=extra_pinned,
+            limit=limit,
         )
 
     def learn(

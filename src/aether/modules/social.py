@@ -73,6 +73,10 @@ class SocialModule(AetherModule):
                 deltas.extend(self._from_question_asked(world, event))
             elif event_type == "question_answered":
                 deltas.extend(self._from_question_answered(world, event))
+            elif event_type == "dialogue_whispered":
+                deltas.extend(self._from_dialogue_whispered(world, event))
+            elif event_type == "dialogue_refused":
+                deltas.extend(self._from_dialogue_refused(world, event))
             elif event_type == "evidence_presented":
                 deltas.extend(self._from_evidence_presented(world, event))
         return deltas
@@ -173,6 +177,77 @@ class SocialModule(AetherModule):
                 fear=fear,
                 suspicion=suspicion,
                 reason=reason,
+                event_id=event.id,
+            )
+            if delta is not None:
+                deltas.append(delta)
+        return deltas
+
+    def _from_dialogue_whispered(
+        self,
+        world: World,
+        event: WorldEvent,
+    ) -> list[RelationshipDelta]:
+        attrs = event.data.attributes or {}
+        speaker_id = attrs.get("speaker_id") or event.actor_id
+        listener_ids = list(attrs.get("listener_ids") or [])
+        topic = str(attrs.get("topic") or "")
+        bias = self._topic_bias(topic)
+        deltas: list[RelationshipDelta] = []
+        if not speaker_id:
+            return deltas
+
+        if bias == "cold":
+            trust, affinity, suspicion = -0.02, 0.01, 0.03
+            reason = "private tense whisper"
+        else:
+            trust, affinity, suspicion = 0.04, 0.05, -0.01
+            reason = "private whisper"
+
+        for listener_id in listener_ids:
+            for from_id, to_id, t_delta, a_delta, s_delta in (
+                (listener_id, speaker_id, trust, affinity, suspicion),
+                (speaker_id, listener_id, trust / 2, affinity / 2, 0.0),
+            ):
+                delta = self._apply(
+                    world,
+                    from_id=from_id,
+                    to_id=to_id,
+                    trust=t_delta,
+                    affinity=a_delta,
+                    suspicion=s_delta,
+                    reason=reason,
+                    event_id=event.id,
+                )
+                if delta is not None:
+                    deltas.append(delta)
+        return deltas
+
+    def _from_dialogue_refused(
+        self,
+        world: World,
+        event: WorldEvent,
+    ) -> list[RelationshipDelta]:
+        attrs = event.data.attributes or {}
+        speaker_id = attrs.get("speaker_id") or event.actor_id
+        questioner_id = attrs.get("questioner_id")
+        listener_ids = list(attrs.get("listener_ids") or [])
+        targets = [questioner_id] if questioner_id else listener_ids
+        deltas: list[RelationshipDelta] = []
+        if not speaker_id:
+            return deltas
+
+        for listener_id in targets:
+            if not listener_id:
+                continue
+            delta = self._apply(
+                world,
+                from_id=listener_id,
+                to_id=speaker_id,
+                trust=-0.04,
+                affinity=-0.03,
+                suspicion=0.07,
+                reason="refused to answer",
                 event_id=event.id,
             )
             if delta is not None:

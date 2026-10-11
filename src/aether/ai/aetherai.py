@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, NoReturn
 
-from langchain_core.embeddings import Embeddings
-from langchain_core.language_models import BaseChatModel
-
-from aether.ai.continuity import refresh_scene_summary
-from aether.ai.graph import get_interact_graph
 from aether.components.shared import AetherValidationError
 from aether.domain.actions import Action
 from aether.domain.events import WorldEvent
@@ -17,6 +12,7 @@ from aether.domain.interactions import (
     InteractionStatus,
     TurnDecision,
     TurnReport,
+    unanswered_questions,
 )
 from aether.domain.presentation import InteractOptions, PresentationStyle
 from aether.domain.relationship import RelationshipDelta
@@ -25,8 +21,18 @@ from aether.domain.sessions import Session
 from aether.engine.runtime_engine import RuntimeEngine
 
 if TYPE_CHECKING:
+    from langchain_core.embeddings import Embeddings
+    from langchain_core.language_models import BaseChatModel
+
     from aether.aether import Aether
     from aether.domain.world import World
+
+
+def _raise_missing_ai_extra(exc: ImportError) -> NoReturn:
+    raise AetherValidationError(
+        "AI features require the optional dependency set. "
+        'Install with: pip install "aether-sim[ai]"'
+    ) from exc
 
 
 class AetherAI:
@@ -48,6 +54,10 @@ class AetherAI:
     @property
     def graph(self):
         if self._graph is None:
+            try:
+                from aether.ai.graph import get_interact_graph
+            except ImportError as exc:
+                _raise_missing_ai_extra(exc)
             self._graph = get_interact_graph()
         return self._graph
 
@@ -64,6 +74,7 @@ class AetherAI:
         options: InteractOptions | None = None,
         style: PresentationStyle | None = None,
         max_npc_actions: int | None = None,
+        callbacks: Any = None,
     ) -> InteractionResult:
         """
         Run the act-one LangGraph loop for one player message.
@@ -129,6 +140,7 @@ class AetherAI:
                     "model": self.model,
                     "style": resolved.style,
                     "max_npc_actions": resolved.max_npc_actions,
+                    "callbacks": callbacks,
                 }
             },
         )
@@ -165,6 +177,8 @@ class AetherAI:
             if isinstance(part, str) and part.strip()
         ]
         narrative = "\n\n".join(narrative_parts) if narrative_parts else None
+
+        from aether.ai.continuity import refresh_scene_summary
 
         scene_summary = refresh_scene_summary(
             world=world,
@@ -204,6 +218,7 @@ class AetherAI:
             RelationshipDelta.model_validate(item)
             for item in (final_state.get("relationship_deltas") or [])
         ]
+        open_questions = unanswered_questions(list(world.events.events))
         report = TurnReport(
             decisions=decisions,
             reject_reasons=list(final_state.get("reject_reasons") or []),
@@ -216,6 +231,8 @@ class AetherAI:
             beliefs_formed=int(final_state.get("beliefs_formed") or 0),
             scene_summary=scene_summary,
             relationship_deltas=relationship_deltas,
+            open_question_ids=[item.event_id for item in open_questions],
+            open_questions=open_questions,
         )
 
         result = InteractionResult(

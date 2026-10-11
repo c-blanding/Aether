@@ -100,6 +100,13 @@ class NavigationModule(AetherModule):
                 "Destination is not connected to the actor's current location."
             )
 
+        blocked = world.passage_block_reason(
+            previous_location_id,
+            params.destination_location_id,
+        )
+        if blocked:
+            raise AetherValidationError(blocked)
+
         # Witnesses at the departure room (before the move).
         departure_witnesses = world.determine_witnesses(actor.id)
 

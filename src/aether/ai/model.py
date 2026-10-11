@@ -1,7 +1,12 @@
 import os
 
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
+try:
+    from dotenv import load_dotenv
+    from langchain_openai import ChatOpenAI
+except ImportError as exc:  # pragma: no cover - exercised when extras missing
+    raise ImportError(
+        'aether.ai.model requires the AI extras. Install with: pip install "aether-sim[ai]"'
+    ) from exc
 
 load_dotenv()
 

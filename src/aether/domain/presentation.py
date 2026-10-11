@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Literal, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -94,3 +95,28 @@ class SceneSummary(BaseModel):
         default_factory=list,
         description="Open questions / unresolved beats still in play.",
     )
+
+
+@dataclass
+class PresentationCallbacks:
+    """
+    Optional host hooks fired during interact.
+
+    Narrative deltas and dialogue lines are emitted only after the beat's
+    events have already been committed.
+    """
+
+    on_narrative_delta: Optional[Callable[[str], None]] = None
+    on_dialogue_line: Optional[Callable[[Any], None]] = None
+    on_event: Optional[Callable[[Any], None]] = None
+
+
+@dataclass
+class PresentationChunk:
+    """One item yielded by ``Aether.interact_stream``."""
+
+    kind: Literal["event", "narrative_delta", "dialogue_line", "result"]
+    text: Optional[str] = None
+    event: Any = None
+    dialogue: Any = None
+    result: Any = None

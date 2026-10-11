@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -61,6 +61,27 @@ class ScenarioItem(BaseModel):
     owner: str | None = None
     hidden: bool = False
     tags: list[str] = Field(default_factory=list)
+    is_container: bool = False
+    container_open: bool = False
+    inside: str | None = None
+    use_mode: Literal["keep", "consume", "transform"] = "keep"
+    transform_name: str | None = None
+    transform_description: str | None = None
+
+
+class ScenarioPassage(BaseModel):
+    from_location: str
+    to_location: str
+    locked: bool = False
+    open: bool = True
+    key: str | None = None
+
+
+class ScenarioAgenda(BaseModel):
+    character: str
+    location: str
+    start_minute: int
+    end_minute: int
 
 
 class ScenarioLocation(BaseModel):
@@ -76,6 +97,9 @@ class ScenarioDocument(BaseModel):
     locations: list[ScenarioLocation] = Field(default_factory=list)
     characters: list[ScenarioCharacter] = Field(default_factory=list)
     items: list[ScenarioItem] = Field(default_factory=list)
+    passages: list[ScenarioPassage] = Field(default_factory=list)
+    agendas: list[ScenarioAgenda] = Field(default_factory=list)
+    start_minute: int | None = None
 
 
 def _read_document(path: Path) -> dict[str, Any]:
@@ -197,29 +221,103 @@ def load_scenario(
         _bind(characters_by_key, key, character.id, "character")
         _bind(characters_by_key, entry.name, character.id, "character")
 
+    items_by_key: dict[str, str] = {}
+    created_items: list[tuple[Any, str]] = []
     for entry in document.items:
         location_id = None
         owner_id = None
-        if entry.location:
+        if entry.location and not entry.inside:
             location_id = locations_by_key.get(entry.location)
             if location_id is None:
                 raise ScenarioLoadError(
                     f"Unknown location '{entry.location}' for item '{entry.name}'."
                 )
-        if entry.owner:
+        if entry.owner and not entry.inside:
             owner_id = characters_by_key.get(entry.owner)
             if owner_id is None:
                 raise ScenarioLoadError(
                     f"Unknown owner '{entry.owner}' for item '{entry.name}'."
                 )
-        world.create_item(
+        item = world.create_item(
             name=entry.name,
             description=entry.description,
             location_id=location_id,
             owner_id=owner_id,
             hidden=entry.hidden,
             tags=entry.tags,
+            is_container=entry.is_container,
+            container_open=entry.container_open,
+            use_mode=entry.use_mode,
+            transform_name=entry.transform_name,
+            transform_description=entry.transform_description,
         )
+        key = entry.id or entry.name
+        _bind(items_by_key, key, item.id, "item")
+        _bind(items_by_key, entry.name, item.id, "item")
+        created_items.append((entry, item.id))
+
+    for entry, item_id in created_items:
+        if not entry.inside:
+            continue
+        container_id = items_by_key.get(entry.inside)
+        if container_id is None:
+            raise ScenarioLoadError(
+                f"Unknown container '{entry.inside}' for item '{entry.name}'."
+            )
+        container = world.items[container_id]
+        if not container.is_container:
+            raise ScenarioLoadError(
+                f"Item '{entry.inside}' is not a container."
+            )
+        item = world.items[item_id]
+        if item.state.owner_id:
+            owner = world.characters.get(item.state.owner_id)
+            if owner is not None:
+                owner.inventory.remove(item.id)
+        item.state.location_id = None
+        item.state.owner_id = None
+        item.state.container_id = container_id
+
+    for entry in document.passages:
+        from_id = locations_by_key.get(entry.from_location)
+        to_id = locations_by_key.get(entry.to_location)
+        if from_id is None or to_id is None:
+            raise ScenarioLoadError(
+                f"Unknown passage endpoints '{entry.from_location}' -> "
+                f"'{entry.to_location}'."
+            )
+        key_item_id = None
+        if entry.key:
+            key_item_id = items_by_key.get(entry.key)
+            if key_item_id is None:
+                raise ScenarioLoadError(
+                    f"Unknown key '{entry.key}' for passage "
+                    f"'{entry.from_location}' -> '{entry.to_location}'."
+                )
+        world.create_passage(
+            from_id,
+            to_id,
+            locked=entry.locked,
+            is_open=entry.open,
+            key_item_id=key_item_id,
+        )
+
+    for entry in document.agendas:
+        character_id = characters_by_key.get(entry.character)
+        location_id = locations_by_key.get(entry.location)
+        if character_id is None or location_id is None:
+            raise ScenarioLoadError(
+                f"Unknown agenda target '{entry.character}' @ '{entry.location}'."
+            )
+        world.add_agenda(
+            character_id,
+            location_id,
+            entry.start_minute,
+            entry.end_minute,
+        )
+
+    if document.start_minute is not None:
+        world.clock.minute_of_day = document.start_minute
 
     aether.save(world)
     return world

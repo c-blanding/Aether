@@ -32,6 +32,14 @@ class UseItemAttributes(BaseModel):
         description="IDs of entities the item was used on.",
     )
     used_by_id: str = Field(description="ID of the character that used the item.")
+    effect: str = Field(
+        default="keep",
+        description="keep, consume, or transform.",
+    )
+    consumed: bool = Field(
+        default=False,
+        description="Whether the item was removed by this use.",
+    )
 
 
 class PickUpItemParams(BaseModel):
@@ -580,14 +588,29 @@ class InventoryModule(AetherModule):
         if item.state.owner_id != actor.id:
             raise AetherValidationError("Actor does not own this item.")
 
+        if item.state.consumed:
+            raise AetherValidationError("Item has already been consumed.")
+
         if actor.inventory.is_equipped(item.id):
             raise AetherValidationError(
                 "Item is equipped; unequip it before using."
             )
 
-        item.state.owner_id = None
-        item.state.location_id = actor.state.location_id
-        actor.inventory.remove(item.id)
+        effect = item.use_mode
+        consumed = False
+        if effect == "consume":
+            item.state.owner_id = None
+            item.state.location_id = None
+            item.state.container_id = None
+            item.state.consumed = True
+            actor.inventory.remove(item.id)
+            consumed = True
+        elif effect == "transform":
+            if item.transform_name:
+                item.name = item.transform_name
+            if item.transform_description:
+                item.description = item.transform_description
+            item.use_mode = "keep"
 
         event = WorldEvent(
             world_id=world.id,
@@ -600,6 +623,8 @@ class InventoryModule(AetherModule):
                     "item_id": item.id,
                     "target_ids": params.target_ids,
                     "used_by_id": actor.id,
+                    "effect": effect,
+                    "consumed": consumed,
                 },
             ),
             witnessed_by=world.determine_witnesses(actor.id),

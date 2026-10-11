@@ -140,6 +140,85 @@ class RuntimeTrace(BaseModel):
             self.reject_reasons.append(reason)
 
 
+class OpenQuestion(BaseModel):
+    """An asked question that no later answer or refusal has closed."""
+
+    event_id: str = Field(..., description="ID of the question_asked event.")
+    topic: str = Field(default="", description="Topic gist of the question.")
+    speaker_id: str = Field(default="", description="Character who asked.")
+    listener_ids: List[str] = Field(
+        default_factory=list,
+        description="Characters the question was addressed to.",
+    )
+
+
+def _topics_overlap(left: str, right: str) -> bool:
+    a = (left or "").strip().lower()
+    b = (right or "").strip().lower()
+    if not a or not b:
+        return True
+    return a == b or a in b or b in a
+
+
+def unanswered_questions(events: List[WorldEvent]) -> List[OpenQuestion]:
+    """
+    Questions still open on this event log.
+
+    A later ``question_answered`` or ``dialogue_refused`` closes a matching ask.
+    """
+    open_items: List[OpenQuestion] = []
+    for event in events:
+        attrs = event.data.attributes or {}
+        if event.type == "question_asked":
+            open_items.append(
+                OpenQuestion(
+                    event_id=event.id,
+                    topic=str(attrs.get("topic") or ""),
+                    speaker_id=str(attrs.get("speaker_id") or event.actor_id or ""),
+                    listener_ids=[
+                        value
+                        for value in (attrs.get("listener_ids") or [])
+                        if isinstance(value, str)
+                    ],
+                )
+            )
+            continue
+        if event.type not in {"question_answered", "dialogue_refused"}:
+            continue
+
+        topic = str(attrs.get("topic") or "")
+        questioner_id = attrs.get("questioner_id")
+        if questioner_id is None:
+            open_items = [
+                item
+                for item in open_items
+                if not _topics_overlap(item.topic, topic)
+            ]
+            continue
+
+        remaining: List[OpenQuestion] = []
+        closed = False
+        for item in open_items:
+            if (
+                not closed
+                and item.speaker_id == questioner_id
+                and _topics_overlap(item.topic, topic)
+            ):
+                closed = True
+                continue
+            remaining.append(item)
+        if not closed:
+            remaining = []
+            closed = False
+            for item in open_items:
+                if not closed and item.speaker_id == questioner_id:
+                    closed = True
+                    continue
+                remaining.append(item)
+        open_items = remaining
+    return open_items
+
+
 class TurnDecision(BaseModel):
     """One decide/execute beat recorded for host UI/debug."""
 
@@ -179,6 +258,14 @@ class TurnReport(BaseModel):
     relationship_deltas: List[RelationshipDelta] = Field(
         default_factory=list,
         description="Social relationship deltas applied during this turn.",
+    )
+    open_question_ids: List[str] = Field(
+        default_factory=list,
+        description="Event IDs of questions still unanswered after this turn.",
+    )
+    open_questions: List[OpenQuestion] = Field(
+        default_factory=list,
+        description="Unanswered questions (topic and asker) still in play.",
     )
 
 
