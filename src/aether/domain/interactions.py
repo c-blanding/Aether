@@ -94,6 +94,11 @@ class DialogueLine(BaseModel):
         description="ID of the character speaking.",
     )
 
+    character_name: str = Field(
+        ...,
+        description="Name of the character speaking.",
+    )
+
     text: str = Field(
         ...,
         description="Dialogue text spoken by the character.",
