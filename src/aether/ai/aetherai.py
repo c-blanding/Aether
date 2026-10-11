@@ -5,16 +5,22 @@ from typing import TYPE_CHECKING, Optional
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 
+from aether.ai.continuity import refresh_scene_summary
 from aether.ai.graph import get_interact_graph
+from aether.components.shared import AetherValidationError
 from aether.domain.actions import Action
-from aether.domain.character import Character
 from aether.domain.events import WorldEvent
 from aether.domain.interactions import (
     DialogueLine,
     Interaction,
     InteractionResult,
     InteractionStatus,
+    TurnDecision,
+    TurnReport,
 )
+from aether.domain.presentation import InteractOptions, PresentationStyle
+from aether.domain.relationship import RelationshipDelta
+from aether.modules.dialogue import SPEAKING_EVENT_TYPES
 from aether.domain.sessions import Session
 from aether.engine.runtime_engine import RuntimeEngine
 
@@ -45,17 +51,7 @@ class AetherAI:
             self._graph = get_interact_graph()
         return self._graph
 
-    def interpret(self, message: str, actor_id: str = "player") -> list[Action]:
-        """Deprecated stub; use interact (act-one loop) instead."""
-        return []
 
-    def generate_dialogue(
-        self,
-        character: Character,
-        interaction: Interaction,
-    ) -> list[DialogueLine]:
-        """Deprecated stub; dialogue is produced inside the interact graph."""
-        return []
 
     def interact(
         self,
@@ -65,10 +61,27 @@ class AetherAI:
         interaction: Interaction,
         *,
         max_steps: int = 6,
+        options: InteractOptions | None = None,
+        style: PresentationStyle | None = None,
+        max_npc_actions: int | None = None,
     ) -> InteractionResult:
         """
         Run the act-one LangGraph loop for one player message.
         """
+        if self.model is None:
+            raise AetherValidationError(
+                "AetherAI.interact requires a language model."
+            )
+
+        base = (options or InteractOptions()).model_dump()
+        if options is None:
+            base["max_steps"] = max_steps
+        if style is not None:
+            base["style"] = style
+        if max_npc_actions is not None:
+            base["max_npc_actions"] = max_npc_actions
+        resolved = InteractOptions.model_validate(base)
+
         interaction.status = InteractionStatus.RUNNING
         actor_id = interaction.request.actor_id
         message = interaction.request.message or ""
@@ -84,7 +97,8 @@ class AetherAI:
             "last_events": [],
             "speaking_pending": False,
             "step_count": 0,
-            "max_steps": max_steps,
+            "max_steps": resolved.max_steps,
+            "max_npc_actions": resolved.max_npc_actions,
             "done": False,
             "status": "running",
             "events": [],
@@ -93,6 +107,15 @@ class AetherAI:
             "actions": [],
             "trace_steps": [],
             "presentation_pending": False,
+            "npc_actions_taken": 0,
+            "npc_acted_ids": [],
+            "last_executed_actor_id": None,
+            "turn_decisions": [],
+            "reject_reasons": [],
+            "perception_count": 0,
+            "memory_count": 0,
+            "beliefs_formed": 0,
+            "relationship_deltas": [],
         }
 
         final_state = self.graph.invoke(
@@ -104,6 +127,8 @@ class AetherAI:
                     "session": session,
                     "interaction": interaction,
                     "model": self.model,
+                    "style": resolved.style,
+                    "max_npc_actions": resolved.max_npc_actions,
                 }
             },
         )
@@ -125,6 +150,8 @@ class AetherAI:
         interaction.events = events
         for step in final_state.get("trace_steps") or []:
             interaction.trace.add_step(step)
+        for reason in final_state.get("reject_reasons") or []:
+            interaction.trace.add_rejection(reason)
 
         status_name = final_state.get("status") or "completed"
         try:
@@ -139,12 +166,65 @@ class AetherAI:
         ]
         narrative = "\n\n".join(narrative_parts) if narrative_parts else None
 
+        scene_summary = refresh_scene_summary(
+            world=world,
+            session=session,
+            actor_id=actor_id,
+            events=events,
+            narrative=narrative,
+            model=self.model,
+        )
+
+        event_types = [event.type for event in events]
+        speaking_event_types = [
+            event_type
+            for event_type in event_types
+            if event_type in SPEAKING_EVENT_TYPES
+        ]
+        decisions = [
+            TurnDecision.model_validate(item)
+            for item in (final_state.get("turn_decisions") or [])
+        ]
+        npc_action_types = [
+            decision.action_type
+            for decision in decisions
+            if decision.source == "npc_react"
+            and decision.accepted is True
+            and decision.action_type
+        ]
+        # Accepted flag may be recorded on a later turn_decisions entry;
+        # also count proposed+executed npc actions by type from decisions.
+        if not npc_action_types:
+            npc_action_types = [
+                decision.action_type
+                for decision in decisions
+                if decision.source == "npc_react" and decision.action_type
+            ]
+        relationship_deltas = [
+            RelationshipDelta.model_validate(item)
+            for item in (final_state.get("relationship_deltas") or [])
+        ]
+        report = TurnReport(
+            decisions=decisions,
+            reject_reasons=list(final_state.get("reject_reasons") or []),
+            event_types=event_types,
+            speaking_event_types=speaking_event_types,
+            dialogue_line_count=len(dialogue),
+            npc_action_types=npc_action_types,
+            perception_count=int(final_state.get("perception_count") or 0),
+            memory_count=int(final_state.get("memory_count") or 0),
+            beliefs_formed=int(final_state.get("beliefs_formed") or 0),
+            scene_summary=scene_summary,
+            relationship_deltas=relationship_deltas,
+        )
+
         result = InteractionResult(
             interaction_id=interaction.id,
             status=status,
             dialogue=dialogue,
             narrative=narrative,
             events=events,
+            report=report,
         )
         interaction.result = result
         interaction.status = status

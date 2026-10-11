@@ -31,6 +31,7 @@ class RegisteredAction:
     module_name: str
     parameter_model: Type[BaseModel]
     handler: ActionHandler
+    required_capability: str
 
 
 class ActionRegistry:
@@ -45,13 +46,22 @@ class ActionRegistry:
         module_name: str,
         parameter_model: Type[BaseModel],
         handler: ActionHandler,
+        *,
+        required_capability: str | None = None,
     ) -> None:
         self.actions[action_type] = RegisteredAction(
             action_type=action_type,
             module_name=module_name,
             parameter_model=parameter_model,
             handler=handler,
+            required_capability=required_capability or action_type,
         )
+
+    def get(self, action_type: str) -> RegisteredAction:
+        registration = self.actions.get(action_type)
+        if registration is None:
+            raise UnknownActionError(f"Unknown action type: {action_type}")
+        return registration
 
     def validate(self, action: Action) -> Action:
         registration = self.actions.get(action.type)

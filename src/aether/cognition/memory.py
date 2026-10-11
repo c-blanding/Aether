@@ -224,33 +224,73 @@ class Memory(BaseModel):
         self,
         query: str,
         limit: int = 10,
+        *,
+        location_ids: Optional[List[str]] = None,
+        participant_ids: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        min_importance: float = 0.0,
     ) -> List[MemoryRecord]:
-        normalized_query = query.lower()
+        """
+        Lexical recall with optional filters.
+
+        When filters are provided, matching memories get a score boost and
+        non-matching memories are soft-penalized (not hard-excluded) so sparse
+        memories still surface if nothing else matches.
+        """
+        normalized_query = (query or "").lower().strip()
+        query_tokens = [token for token in normalized_query.split() if token]
+        location_filter = set(location_ids or [])
+        participant_filter = set(participant_ids or [])
+        tag_filter = {tag.lower() for tag in (tags or [])}
 
         scored: List[tuple[float, MemoryRecord]] = []
 
         for memory in self.episodic:
-            text = f"{memory.summary} {memory.perspective} {' '.join(memory.tags)}".lower()
+            if memory.importance < min_importance:
+                continue
 
-            relevance = 1.0 if normalized_query in text else 0.0
+            text = (
+                f"{memory.summary} {memory.perspective} {' '.join(memory.tags)}"
+            ).lower()
+
+            if normalized_query and normalized_query in text:
+                relevance = 1.0
+            elif query_tokens:
+                hits = sum(1 for token in query_tokens if token in text)
+                relevance = hits / len(query_tokens)
+            else:
+                relevance = 0.35  # empty query → recency/importance ranking
+
             score = (
-                relevance * 0.45
+                relevance * 0.40
                 + memory.importance * 0.30
-                + memory.emotional_weight * 0.25
+                + memory.emotional_weight * 0.20
             )
+
+            if location_filter:
+                if location_filter & set(memory.location_ids):
+                    score += 0.15
+                else:
+                    score -= 0.05
+
+            if participant_filter:
+                if participant_filter & set(memory.participant_ids):
+                    score += 0.15
+                else:
+                    score -= 0.05
+
+            if tag_filter:
+                memory_tags = {tag.lower() for tag in memory.tags}
+                if tag_filter & memory_tags:
+                    score += 0.1
+                else:
+                    score -= 0.03
 
             if score > 0:
                 scored.append((score, memory))
 
-        scored.sort(
-            key=lambda pair: pair[0],
-            reverse=True,
-        )
-
-        return [
-            memory
-            for _, memory in scored[:limit]
-        ]
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [memory for _, memory in scored[:limit]]
 
     def consolidate(self, limit: int = 5) -> Optional[MemorySummary]:
         if not self.episodic:

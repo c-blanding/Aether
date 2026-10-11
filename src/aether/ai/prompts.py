@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from aether.domain.presentation import PresentationStyle
+
 # ---------------------------------------------------------------------------
 # Act-one planner
 # ---------------------------------------------------------------------------
@@ -27,6 +32,9 @@ DECIDE_USER = """Player message:
 {message}
 
 Actor ID: {actor_id}
+
+Scene continuity summary (JSON; use for grounding, do not invent beyond it):
+{scene_summary}
 
 World context (JSON):
 {context}
@@ -93,6 +101,9 @@ NARRATIVE_USER = """Render narration for this committed beat.
 Player / host message that led here:
 {message}
 
+Scene continuity summary (JSON; ground the prose here):
+{scene_summary}
+
 Committed world events (JSON; these are facts):
 {events}
 
@@ -102,10 +113,11 @@ Scene (JSON):
 Characters involved (JSON; personality, emotion, goals, beliefs, memories):
 {characters}
 
-Recent interaction tone notes (JSON, may be empty):
+Presentation style + tone notes (JSON):
 {tone}
 
-Write third-person narrative prose only. No quoted dialogue. No JSON.
+Follow the host presentation style for tone, length, and POV.
+Write narrative prose only. No quoted dialogue. No JSON.
 """
 
 # ---------------------------------------------------------------------------
@@ -134,13 +146,20 @@ invent new world physics.
 - Prefer subtext: implication, hesitation, deflection, warmth, formality, or bite
   matching traits and goals.
 - Keep replies proportional: usually 1–3 sentences per speaker per beat.
-- For ask_question / addressed speech:
-  1) Always include the speaker's uttered line (the question or statement).
-  2) Include a listener reply when a listener_id is present, unless the briefs make
-     silence the stronger in-character choice (rare; if silent, omit the listener line
-     rather than inventing filler).
+- For ask_question:
+  1) Always include the asker's uttered question.
+  2) If listener_ids has one addressee, usually include their reply
+     (unless silence is strongly in-character).
+  3) If addressed_crowd is true or listener_ids has several people, do NOT make
+     everyone answer. Include 0–2 natural replies from the most motivated
+     addressees (goals, emotion, role). Others may stay silent.
+- For answer_question / question_answered:
+  Include the answerer's spoken line. Do not invent a follow-up question unless
+  a new speaking event requires it.
+- For say_to / dialogue_spoken with a single listener: speaker line; optional
+  brief listener reaction only when strongly motivated.
 - For room-wide speak: one speaker line is enough unless another character would
-  naturally interject from goals/emotion (keep interjections sparse).
+  naturally interject (keep interjections sparse).
 - Match register to setting (courtly, slangy, clinical, playful) using briefs + scene.
 - Avoid repeating the topic gist verbatim; transform it into natural speech.
 - No markdown, bullet lists, or OOC commentary in the spoken text itself.
@@ -154,10 +173,44 @@ invent new world physics.
   play, and custom modules — follow character + scene, not a fixed genre template.
 """
 
+
+def style_system_suffix(style: "PresentationStyle") -> str:
+    """Append host presentation style instructions to narrative/dialogue systems."""
+    length_guide = {
+        "terse": "Keep beats short: usually 1–2 sentences for narrative; tight spoken lines.",
+        "default": "Use the default length guidance in the system prompt.",
+        "expansive": "Allow richer staging: up to ~3 short paragraphs when the beat supports it.",
+    }.get(style.length, "Use the default length guidance in the system prompt.")
+
+    pov_guide = (
+        "Write in second person (you) for narration."
+        if style.pov == "second"
+        else "Write in third person for narration."
+    )
+    sfw_guide = (
+        "Keep content suitable for general audiences (SFW)."
+        if style.sfw
+        else "Adult themes may appear if events support them; still avoid gratuitous content."
+    )
+    rails = style.rails.strip() or "(none)"
+
+    return f"""
+
+## Host presentation style (override defaults when they conflict)
+- Tone: {style.tone}
+- Length: {style.length} — {length_guide}
+- POV: {style.pov} — {pov_guide}
+- SFW: {style.sfw} — {sfw_guide}
+- Rails: {rails}
+"""
+
 DIALOGUE_USER = """Write spoken lines for this speaking beat.
 
 Player / host message that led here:
 {message}
+
+Scene continuity summary (JSON; keep continuity, do not invent beyond it):
+{scene_summary}
 
 Speaking events (JSON; topic/gist is intent, not final wording):
 {events}
@@ -168,8 +221,14 @@ Scene (JSON):
 Character briefs (JSON):
 {characters}
 
+Presentation style (JSON):
+{style}
+
 Optional already-rendered narrative for this beat (for continuity; do not copy it):
 {narrative}
 
-Produce dialogue lines only. Speaker first; listener reply when addressed.
+Produce dialogue lines only.
+Order: asker/speaker first, then any replies from addressed listeners.
+For crowd questions, only include listeners who would naturally speak.
+Match length/tone to the presentation style.
 """

@@ -190,8 +190,24 @@ class Character(BaseModel):
             location_ids=location_ids,
         )
 
-    def recall(self, query: str) -> List[MemoryRecord]:
-        return self.memory.search(query)
+    def recall(
+        self,
+        query: str,
+        *,
+        location_ids: Optional[List[str]] = None,
+        participant_ids: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        limit: int = 10,
+        min_importance: float = 0.0,
+    ) -> List[MemoryRecord]:
+        return self.memory.search(
+            query,
+            limit=limit,
+            location_ids=location_ids,
+            participant_ids=participant_ids,
+            tags=tags,
+            min_importance=min_importance,
+        )
 
     def learn(
         self,

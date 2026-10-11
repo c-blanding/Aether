@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from aether.components.shared import new_id, utc_now
+from aether.domain.snapshot import WorldSnapshot
 
 
 class Branch(BaseModel):
@@ -60,6 +61,11 @@ class Turn(BaseModel):
         description="ID of the interaction associated with this turn.",
     )
 
+    snapshot: Optional[WorldSnapshot] = Field(
+        default=None,
+        description="World simulation state after this turn completed.",
+    )
+
     created_at: datetime = Field(
         default_factory=utc_now,
         description="UTC timestamp when this turn was created.",
@@ -91,6 +97,15 @@ class Timeline(BaseModel):
 
         return self.branches["main"]
 
+    def get_turn(self, turn_id: str) -> Optional[Turn]:
+        for turn in self.turns:
+            if turn.id == turn_id:
+                return turn
+        return None
+
+    def turns_for_branch(self, branch_id: str) -> List[Turn]:
+        return [turn for turn in self.turns if turn.branch_id == branch_id]
+
     def fork(
         self,
         from_turn_id: Optional[str] = None,
@@ -109,11 +124,7 @@ class Timeline(BaseModel):
         branch_id: str,
         interaction_id: Optional[str] = None,
     ) -> Turn:
-        branch_turns = [
-            turn
-            for turn in self.turns
-            if turn.branch_id == branch_id
-        ]
+        branch_turns = self.turns_for_branch(branch_id)
 
         turn = Turn(
             branch_id=branch_id,

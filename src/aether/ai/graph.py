@@ -9,7 +9,7 @@ from aether.ai.state import InteractionState
 
 
 def build_interact_graph():
-    """Compile the act-one interaction graph."""
+    """Compile the act-one interaction graph (with optional NPC react beat)."""
     graph = StateGraph(InteractionState)
 
     graph.add_node("gather_context", nodes.gather_context)
@@ -17,6 +17,7 @@ def build_interact_graph():
     graph.add_node("validate_action", nodes.validate_action)
     graph.add_node("execute_action", nodes.execute_action)
     graph.add_node("generate_dialogue", nodes.generate_dialogue)
+    graph.add_node("npc_react", nodes.npc_react)
 
     graph.set_entry_point("gather_context")
     graph.add_edge("gather_context", "decide_next_action")
@@ -41,10 +42,23 @@ def build_interact_graph():
         edges.after_execute,
         {
             "generate_dialogue": "generate_dialogue",
+            "npc_react": "npc_react",
             "decide_next_action": "decide_next_action",
         },
     )
-    graph.add_edge("generate_dialogue", "decide_next_action")
+    graph.add_conditional_edges(
+        "generate_dialogue",
+        edges.after_presentation,
+        {"npc_react": "npc_react"},
+    )
+    graph.add_conditional_edges(
+        "npc_react",
+        edges.after_npc_react,
+        {
+            "execute_action": "execute_action",
+            "decide_next_action": "decide_next_action",
+        },
+    )
 
     return graph.compile()
 

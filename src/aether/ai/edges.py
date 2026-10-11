@@ -26,10 +26,28 @@ def after_validate(
 
 def after_execute(
     state: InteractionState,
-) -> Literal["generate_dialogue", "decide_next_action"]:
+) -> Literal["generate_dialogue", "npc_react", "decide_next_action"]:
     if state.get("last_rejection"):
         return "decide_next_action"
-    # Any committed events get presentation (narrative + optional dialogue).
     if state.get("presentation_pending") or state.get("last_events"):
         return "generate_dialogue"
+    return "npc_react"
+
+
+def after_presentation(
+    state: InteractionState,
+) -> Literal["npc_react"]:
+    return "npc_react"
+
+
+def after_npc_react(
+    state: InteractionState,
+) -> Literal["execute_action", "decide_next_action"]:
+    decision = state.get("decision") or {}
+    if (
+        decision.get("source") == "npc_react"
+        and decision.get("validated_action")
+        and decision.get("kind") == "action"
+    ):
+        return "execute_action"
     return "decide_next_action"

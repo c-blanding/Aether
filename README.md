@@ -162,7 +162,7 @@ For the Phase 1 host path (navigation + dialogue + NL act-one loop):
 uv run python examples/manor_interact_demo.py
 ```
 
-With `OPENAI_API_KEY` set, `aether.interact(...)` decides one action at a time, steps the world, and turns speaking events into dialogue lines. Without a key, typed actions still run; NL decide returns immediately and dialogue stubs from topic.
+`aether.interact(...)` requires a chat model (`Aether(model=llm)`). It decides one action at a time, steps the world, then renders narrative (and dialogue when speaking). Typed `aether.step` still works with no model.
 
 ```python
 from aether import Aether
@@ -225,8 +225,8 @@ An item is either in a location or owned by a character, never both. `determine_
 | `knowledge` | Beliefs (may be false). | Written by cognition when importance is high; also `learn`. |
 | `goals` | Active / completed / failed goals. | `add_goal`. |
 | `relationships` | Directed trust, affinity, fear, suspicion. | `update_relationship`. |
-| `inventory` | Item ids, optional capacity. | Prefer inventory actions over editing by hand. |
-| `capabilities` | Named allowed attempts. | Not enforced by the engine yet. |
+| `inventory` | Item ids, optional capacity, `equipped` slot map. | Prefer inventory actions over editing by hand. |
+| `capabilities` | Named allowed attempts. | Empty = unrestricted; otherwise enforced by `RuntimeEngine`. |
 | `planner` | Strategy name (`goal_driven`). | Placeholder. |
 
 `Memory` and `Knowledge` live on the character (data). `CognitiveEngine` operates on them; it does not own them.
@@ -278,16 +278,19 @@ Modules are installed on that SDK instance’s engine. Call `use` again before `
 
 | Module | Status | Actions |
 | --- | --- | --- |
-| `InventoryModule` | Implemented | `pick_up_item`, `drop_item`, `give_item`, `use_item` |
+| `InventoryModule` | Implemented | `pick_up_item`, `drop_item`, `give_item`, `use_item`, `equip_item`, `unequip_item` |
 | `NavigationModule` | Implemented | `move` |
-| `DialogueModule` | Implemented | `speak`, `say_to`, `ask_question` |
+| `DialogueModule` | Implemented | `speak`, `say_to`, `ask_question`, `answer_question` |
+| `DetectiveModule` | Implemented | `examine`, `search_location`, `present_evidence` |
 
 #### Inventory rules (summary)
 
 - **pick_up_item** — actor and unowned item must share a location; ownership moves to the actor.
-- **drop_item** — actor must own the item; item returns to the actor’s location.
-- **give_item** — recipient is `action.target_id`; same location required.
-- **use_item** — actor must own the item; current handler consumes it (placed at actor location). No per-item effect table yet.
+- **drop_item** — actor must own the item; item returns to the actor’s location. Equipped items must be unequipped first.
+- **give_item** — recipient is `action.target_id`; same location required. Equipped items must be unequipped first.
+- **use_item** — actor must own the item; current handler consumes it (placed at actor location). Equipped items must be unequipped first. No per-item effect table yet.
+- **equip_item** — actor must own the item; places it in a named slot (`slot`, default `"default"`). Item stays in inventory. Replacing a slot unequips the previous item.
+- **unequip_item** — clear by `item_id` and/or `slot`; item remains owned.
 
 #### Navigation rules (summary)
 
@@ -295,8 +298,10 @@ Modules are installed on that SDK instance’s engine. Call `use` again before `
 
 #### Dialogue rules (summary)
 
-- **speak** / **say_to** / **ask_question** — commit speaking events with a topic gist (not polished NL). Target must share the actor’s location when addressed.
-- Events: `dialogue_spoken`, `question_asked`. Surface lines come from `generate_dialogue` inside `aether.interact` after those events succeed.
+- **speak** / **say_to** / **ask_question** / **answer_question** — commit speaking events with a topic gist (not polished NL). Targets must share the actor’s location when addressed.
+- **ask_question** — `target_character_ids` for one or more people; empty list asks the crowd (everyone else in the room).
+- **answer_question** — reply to a `questioner_id`, or omit it to answer the room.
+- Events: `dialogue_spoken`, `question_asked`, `question_answered`. Surface lines come from `generate_dialogue` inside `aether.interact` after those events succeed.
 
 List registered mechanics:
 
@@ -366,7 +371,17 @@ class SpeechModule(AetherModule):
 
 ### Sessions and timelines
 
-`world.create_session()` starts a `Session` on the `main` branch with timeline, interaction history, and runtime context. `session.interact(message)` is still a placeholder: it records a turn but does not interpret language or call `step`.
+`world.create_session()` starts a `Session` on the `main` branch with timeline, interaction history, runtime context, and an initial world tip snapshot.
+
+Forking isolates simulation state:
+
+```python
+branch = aether.fork(world, session)                 # fork current tip
+branch = aether.fork(world, session, from_turn_id=t)  # fork a prior turn
+aether.checkout(world, session, "main")              # restore another branch
+```
+
+Each completed `Aether.interact` turn stores a world snapshot. `session.history_for_branch()` returns lineage-aware history up to the fork point. `session.interact(message)` remains a deprecated placeholder.
 
 ### Persistence
 
@@ -411,7 +426,7 @@ aether = Aether(model=llm)
 ```text
 gather_context → decide_next_action (one action or respond)
   → validate_action → aether.step → generate_dialogue (narrative + optional spoken lines)
-  → loop until respond or max_steps
+  → npc_react (optional one NPC beat) → loop until respond or max_steps
 ```
 
 Presentation is module-agnostic and split into two renderers after committed events:
@@ -421,6 +436,62 @@ Presentation is module-agnostic and split into two renderers after committed eve
 Both use dedicated prompts aimed at interactive-fiction / live-character host quality, grounded only in committed events and character briefs.
 
 Prefer `Aether.interact` over deprecated `Session.interact`.
+
+### Capabilities
+
+Characters start with an empty capability set, which means **unrestricted** (any registered action may be attempted).
+
+If you add one or more capabilities, the character may only perform actions whose `required_capability` is in that set. By default each registered action requires a capability matching its action type (`pick_up_item`, `move`, `ask_question`, …).
+
+```python
+player.add_capability("move")
+player.add_capability("pick_up_item")
+# player.can("ask_question") -> False; RuntimeEngine will reject ask_question
+```
+
+### Turn report
+
+`InteractionResult.report` (`TurnReport`) summarizes a host turn: decisions, reject reasons, event types, speaking events, dialogue count, NPC actions, and cognition counts (perceptions / memories / beliefs).
+
+```python
+result = aether.interact(world, session, "pick up the key", actor_id=player.id)
+print(result.report.event_types)
+print(result.report.beliefs_formed)
+print(result.trace.reject_reasons)
+```
+
+### Building a host app
+
+1. Create an SDK instance and install the modules you need:
+   ```python
+   from aether import Aether
+   from aether.ai.model import llm
+   from aether.modules import (
+       DetectiveModule,
+       DialogueModule,
+       InventoryModule,
+       NavigationModule,
+   )
+
+   aether = Aether(model=llm).use(
+       InventoryModule(),
+       NavigationModule(),
+       DialogueModule(),
+       DetectiveModule(),  # optional pack
+   )
+   ```
+2. Author a world (code or scenario file), create a session, then call `aether.interact` for NL turns and/or `aether.step` for typed actions.
+3. Choose a store: default `Aether()` / `Aether.memory()` for local/dev; `Aether.postgres(apply_migrations=True)` for Neon/Postgres.
+4. Render `result.narrative`, `result.dialogue`, and optionally `result.report` in your UI.
+
+Load a JSON (or YAML if PyYAML is installed) scenario:
+
+```python
+from aether.content import load_scenario
+
+world = load_scenario(aether, "examples/scenarios/blackwood_manor.json")
+session = world.create_session()
+```
 
 ## SDK surface
 
@@ -459,34 +530,41 @@ src/aether/
   aether.py                 SDK entry: store, engine, cognition, AI, step
   domain/                   World, Character, Action, Event, Session, …
   engine/                   RuntimeEngine, registries
-  modules/                  inventory, navigation, dialogue
+  modules/                  inventory, navigation, dialogue, detective
+  content/                  scenario JSON/YAML loader
   cognition/                CognitiveEngine, perception, memory, knowledge
-  components/               Goals, inventory, timeline, planner, shared
+  components/               Goals, inventory, timeline, planner, capabilities, shared
   repositories/             Store, InMemory*, Postgres*, schema.sql
   ai/                       act-one LangGraph interact loop, prompts, model factory
 examples/
   one_room_demo.py
   manor_interact_demo.py
+  scenarios/blackwood_manor.json
 ```
 
 ## Status
 
 Implemented:
 
-- World authoring, action validation, inventory/navigation/dialogue handlers, event log, versioning.
-- Character memory, beliefs, goals, relationships, inventory.
+- World authoring, action validation, inventory/navigation/dialogue/detective handlers, event log, versioning.
+- Character memory, beliefs, goals, relationships, inventory, capabilities enforcement.
 - `CognitiveEngine` hooked into `Aether.step` (perceive → memory → knowledge).
 - In-memory and Postgres persistence via `Store`.
-- Perception handlers (actor vs witness perspectives) for inventory, navigation, dialogue.
-- `Aether.interact` act-one loop: decide → step → narrative (+ dialogue when speaking).
+- `Aether.interact` act-one loop: decide → step → narrative/dialogue → optional `npc_react`.
+- Host turn report (`InteractionResult.report`) and scenario packing (`aether.content.load_scenario`).
+
+#### Detective rules (summary)
+
+- **examine** — inspect an item in reach/inventory or the current location; emits `examined` with findings text.
+- **search_location** — reveal `hidden` items in the actor’s location; emits `location_searched`.
+- **present_evidence** — show an owned item to a colocated character without transferring it; emits `evidence_presented`.
+
+Items may set `hidden=True` and optional `tags` at creation.
 
 Not implemented yet:
 
-- Reactive NPC planner beat (`npc_react`).
-- Detective module (`examine` / `search` / `present_evidence`).
-- Enforcement of `capabilities`.
 - Item-specific effects for `use_item`.
-- Narrative / cinematic generation modes.
+- Narrative / cinematic generation modes as separate host modes.
 - Console script entry (`aether:main` is not defined). Run the example instead.
 
 ## License

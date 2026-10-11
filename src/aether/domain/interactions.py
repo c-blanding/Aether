@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 from aether.domain.actions import Action
 from aether.domain.events import WorldEvent
+from aether.domain.presentation import SceneSummary
+from aether.domain.relationship import RelationshipDelta
 from aether.components.shared import new_id, utc_now
 
 
@@ -125,8 +127,59 @@ class RuntimeTrace(BaseModel):
         description="Raw model call metadata for debugging and observability.",
     )
 
+    reject_reasons: List[str] = Field(
+        default_factory=list,
+        description="Validation/execution rejection reasons collected this turn.",
+    )
+
     def add_step(self, step: str) -> None:
         self.steps.append(step)
+
+    def add_rejection(self, reason: str) -> None:
+        if reason:
+            self.reject_reasons.append(reason)
+
+
+class TurnDecision(BaseModel):
+    """One decide/execute beat recorded for host UI/debug."""
+
+    kind: str = Field(
+        ...,
+        description="Decision kind: action, respond, continue, etc.",
+    )
+    action_type: Optional[str] = Field(default=None)
+    actor_id: Optional[str] = Field(default=None)
+    accepted: Optional[bool] = Field(default=None)
+    rejection: Optional[str] = Field(default=None)
+    source: Optional[str] = Field(
+        default=None,
+        description="Origin of the decision, e.g. player planner or npc_react.",
+    )
+    reason: Optional[str] = Field(default=None)
+
+
+class TurnReport(BaseModel):
+    """
+    Stable host-facing summary of one interact() turn.
+    """
+
+    decisions: List[TurnDecision] = Field(default_factory=list)
+    reject_reasons: List[str] = Field(default_factory=list)
+    event_types: List[str] = Field(default_factory=list)
+    speaking_event_types: List[str] = Field(default_factory=list)
+    dialogue_line_count: int = Field(default=0, ge=0)
+    npc_action_types: List[str] = Field(default_factory=list)
+    perception_count: int = Field(default=0, ge=0)
+    memory_count: int = Field(default=0, ge=0)
+    beliefs_formed: int = Field(default=0, ge=0)
+    scene_summary: Optional[SceneSummary] = Field(
+        default=None,
+        description="Scene continuity summary after this turn.",
+    )
+    relationship_deltas: List[RelationshipDelta] = Field(
+        default_factory=list,
+        description="Social relationship deltas applied during this turn.",
+    )
 
 
 class InteractionResult(BaseModel):
@@ -157,6 +210,11 @@ class InteractionResult(BaseModel):
     events: List[WorldEvent] = Field(
         default_factory=list,
         description="World events produced during this interaction.",
+    )
+
+    report: Optional[TurnReport] = Field(
+        default=None,
+        description="Structured turn report for host UI and debugging.",
     )
 
     generation_job_ids: List[str] = Field(
@@ -260,3 +318,20 @@ class InteractionHistory(BaseModel):
 
     def latest(self, limit: int = 10) -> List[Interaction]:
         return self.interactions[-limit:]
+
+    def by_ids(self, interaction_ids: set[str]) -> List[Interaction]:
+        if not interaction_ids:
+            return []
+        return [
+            interaction
+            for interaction in self.interactions
+            if interaction.id in interaction_ids
+        ]
+
+    def for_branch(self, branch_id: str) -> List[Interaction]:
+        """Interactions tagged with a single branch id (no ancestry)."""
+        return [
+            interaction
+            for interaction in self.interactions
+            if interaction.branch_id == branch_id
+        ]

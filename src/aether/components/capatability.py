@@ -20,5 +20,11 @@ class CapabilitySet(BaseModel):
     def remove(self, capability: str) -> None:
         self.capabilities.discard(capability)
 
+    def is_unrestricted(self) -> bool:
+        """Empty capability set means no restrictions (backward compatible)."""
+        return len(self.capabilities) == 0
+
     def allows(self, capability: str) -> bool:
+        if self.is_unrestricted():
+            return True
         return capability in self.capabilities

@@ -82,8 +82,12 @@ class InteractionState(TypedDict, total=False):
     last_events: list[dict[str, Any]]
     speaking_pending: bool
     presentation_pending: bool
+    npc_actions_taken: int
+    npc_acted_ids: list[str]
+    last_executed_actor_id: Optional[str]
     step_count: int
     max_steps: int
+    max_npc_actions: int
     done: bool
     status: str
     events: Annotated[list[dict[str, Any]], operator.add]
@@ -91,3 +95,9 @@ class InteractionState(TypedDict, total=False):
     narrative_parts: Annotated[list[str], operator.add]
     actions: Annotated[list[dict[str, Any]], operator.add]
     trace_steps: Annotated[list[str], operator.add]
+    turn_decisions: Annotated[list[dict[str, Any]], operator.add]
+    reject_reasons: Annotated[list[str], operator.add]
+    perception_count: Annotated[int, operator.add]
+    memory_count: Annotated[int, operator.add]
+    beliefs_formed: Annotated[int, operator.add]
+    relationship_deltas: Annotated[list[dict[str, Any]], operator.add]

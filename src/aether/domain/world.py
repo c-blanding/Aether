@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from aether.domain.actions import Action
 from aether.domain.character import Character, CharacterIdentity
 from aether.domain.events import EventStore, WorldEvent
+from aether.domain.relationship import RelationshipDelta
 from aether.modules.base import AetherModule
-from aether.domain.sessions import Session
 from aether.components.shared import AetherError, AetherValidationError, new_id
 from aether.engine.runtime_engine import RuntimeEngine
+
+if TYPE_CHECKING:
+    from aether.domain.sessions import Session
 
 
 class WorldMetadata(BaseModel):
@@ -100,6 +103,19 @@ class Item(BaseModel):
         description="Natural-language description of the item.",
     )
 
+    hidden: bool = Field(
+        default=False,
+        description=(
+            "If true, the item is not obvious until revealed "
+            "(e.g. via search_location)."
+        ),
+    )
+
+    tags: List[str] = Field(
+        default_factory=list,
+        description="Optional tags for modules and retrieval (e.g. clue, key).",
+    )
+
     state: ItemState = Field(
         default_factory=ItemState,
         description="Mutable item state, including location and owner.",
@@ -149,6 +165,29 @@ class SimulationResult(BaseModel):
     events: List[WorldEvent] = Field(
         default_factory=list,
         description="Committed events produced by the action.",
+    )
+
+    perception_count: int = Field(
+        default=0,
+        description="Perceptions created while encoding this step (via Aether.step).",
+        ge=0,
+    )
+
+    memory_count: int = Field(
+        default=0,
+        description="Memories written while encoding this step (via Aether.step).",
+        ge=0,
+    )
+
+    beliefs_formed: int = Field(
+        default=0,
+        description="Beliefs formed/reinforced while encoding this step (via Aether.step).",
+        ge=0,
+    )
+
+    relationship_deltas: List[RelationshipDelta] = Field(
+        default_factory=list,
+        description="Relationship deltas applied by social outcomes this step.",
     )
 
 
@@ -281,6 +320,9 @@ class World(BaseModel):
         description: str = "",
         location_id: Optional[str] = None,
         owner_id: Optional[str] = None,
+        *,
+        hidden: bool = False,
+        tags: Optional[List[str]] = None,
     ) -> Item:
         if location_id is not None and location_id not in self.locations:
             raise AetherValidationError(
@@ -300,6 +342,8 @@ class World(BaseModel):
         item = Item(
             name=name,
             description=description,
+            hidden=hidden,
+            tags=list(tags or []),
             state=ItemState(
                 location_id=location_id,
                 owner_id=owner_id,
@@ -313,10 +357,18 @@ class World(BaseModel):
 
         return item
 
+    def get_item(self, item_id: str) -> Item:
+        return self.items.get(item_id)
+
+    def get_character_items(self, character_id: str) -> List[Item]:
+        return [item for item in self.items.values() if item.state.owner_id == character_id]
+
     def create_session(
         self,
         external_player_id: Optional[str] = None,
     ) -> Session:
+        from aether.domain.sessions import Session
+
         session = Session(
             world_id=self.id,
             external_player_id=external_player_id,
@@ -324,6 +376,7 @@ class World(BaseModel):
 
         self.sessions[session.id] = session
         self.state.active_session_ids.append(session.id)
+        session.sync_tip(self)
 
         return session
 

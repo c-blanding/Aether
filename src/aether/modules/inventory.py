@@ -67,6 +67,32 @@ class GiveItemParams(BaseModel):
     )
 
 
+class EquipItemParams(BaseModel):
+    """Parameters for equipping an owned item."""
+
+    item_id: str = Field(
+        ...,
+        description="ID of the item the actor is attempting to equip.",
+    )
+    slot: str = Field(
+        default="default",
+        description="Equipment slot name (e.g. default, hand, head, body).",
+    )
+
+
+class UnequipItemParams(BaseModel):
+    """Parameters for unequipping an item (by id or by slot)."""
+
+    item_id: Optional[str] = Field(
+        default=None,
+        description="ID of the equipped item to unequip.",
+    )
+    slot: Optional[str] = Field(
+        default=None,
+        description="Slot to clear. Provide item_id or slot (or both).",
+    )
+
+
 class ItemPickedUpAttributes(BaseModel):
     """
     Attributes for the item_picked_up event.
@@ -130,6 +156,22 @@ class ItemGivenAttributes(BaseModel):
     )
 
 
+class ItemEquippedAttributes(BaseModel):
+    item_id: str = Field(..., description="ID of the item that was equipped.")
+    character_id: str = Field(..., description="Character who equipped the item.")
+    slot: str = Field(..., description="Slot the item was equipped into.")
+    previous_item_id: Optional[str] = Field(
+        default=None,
+        description="Item previously in this slot, if any.",
+    )
+
+
+class ItemUnequippedAttributes(BaseModel):
+    item_id: str = Field(..., description="ID of the item that was unequipped.")
+    character_id: str = Field(..., description="Character who unequipped the item.")
+    slot: str = Field(..., description="Slot the item was removed from.")
+
+
 class InventoryModule(AetherModule):
     """
     Inventory mechanics module.
@@ -139,6 +181,8 @@ class InventoryModule(AetherModule):
     - drop_item
     - give_item
     - use_item
+    - equip_item
+    - unequip_item
     """
 
     name = "inventory"
@@ -169,6 +213,18 @@ class InventoryModule(AetherModule):
             parameter_model=UseItemParams,
             handler=self.use_item,
         )
+        registry.actions.register(
+            action_type="equip_item",
+            module_name=self.name,
+            parameter_model=EquipItemParams,
+            handler=self.equip_item,
+        )
+        registry.actions.register(
+            action_type="unequip_item",
+            module_name=self.name,
+            parameter_model=UnequipItemParams,
+            handler=self.unequip_item,
+        )
 
         registry.events.register(
             event_type="item_picked_up",
@@ -190,6 +246,16 @@ class InventoryModule(AetherModule):
             module_name=self.name,
             attribute_model=UseItemAttributes,
         )
+        registry.events.register(
+            event_type="item_equipped",
+            module_name=self.name,
+            attribute_model=ItemEquippedAttributes,
+        )
+        registry.events.register(
+            event_type="item_unequipped",
+            module_name=self.name,
+            attribute_model=ItemUnequippedAttributes,
+        )
 
         registry.perceptions.register(
             event_type="item_picked_up",
@@ -210,6 +276,16 @@ class InventoryModule(AetherModule):
             event_type="item_used",
             module_name=self.name,
             handler=self.perceive_item_used,
+        )
+        registry.perceptions.register(
+            event_type="item_equipped",
+            module_name=self.name,
+            handler=self.perceive_item_equipped,
+        )
+        registry.perceptions.register(
+            event_type="item_unequipped",
+            module_name=self.name,
+            handler=self.perceive_item_unequipped,
         )
 
     def pick_up_item(self, world: World, action: Action) -> List[WorldEvent]:
@@ -314,6 +390,11 @@ class InventoryModule(AetherModule):
         if item.state.owner_id != actor.id:
             raise AetherValidationError("Actor does not own this item.")
 
+        if actor.inventory.is_equipped(item.id):
+            raise AetherValidationError(
+                "Item is equipped; unequip it before dropping."
+            )
+
         previous_owner_id = item.state.owner_id
 
         item.state.owner_id = None
@@ -333,7 +414,7 @@ class InventoryModule(AetherModule):
                     "new_location_id": actor.state.location_id,
                 },
             ),
-            witnessed_by=action.witnesses,
+            witnessed_by=world.determine_witnesses(actor.id),
         )
 
         return [event]
@@ -399,6 +480,11 @@ class InventoryModule(AetherModule):
 
         if item.state.owner_id != source.id:
             raise AetherValidationError("Source actor does not own this item.")
+
+        if source.inventory.is_equipped(item.id):
+            raise AetherValidationError(
+                "Item is equipped; unequip it before giving."
+            )
 
         if source.state.location_id != target.state.location_id:
             raise AetherValidationError(
@@ -494,6 +580,11 @@ class InventoryModule(AetherModule):
         if item.state.owner_id != actor.id:
             raise AetherValidationError("Actor does not own this item.")
 
+        if actor.inventory.is_equipped(item.id):
+            raise AetherValidationError(
+                "Item is equipped; unequip it before using."
+            )
+
         item.state.owner_id = None
         item.state.location_id = actor.state.location_id
         actor.inventory.remove(item.id)
@@ -556,4 +647,185 @@ class InventoryModule(AetherModule):
                 for value in [attrs.used_by_id, *attrs.target_ids]
                 if value
             ],
+        )
+
+    def equip_item(self, world: World, action: Action) -> List[WorldEvent]:
+        params = EquipItemParams.model_validate(action.data.parameters)
+
+        actor = world.characters.get(action.actor_id)
+        item = world.items.get(params.item_id)
+
+        if actor is None:
+            raise AetherValidationError(f"Actor does not exist: {action.actor_id}")
+
+        if item is None:
+            raise AetherValidationError(f"Item does not exist: {params.item_id}")
+
+        if item.state.owner_id != actor.id:
+            raise AetherValidationError("Actor does not own this item.")
+
+        if not actor.inventory.contains(item.id):
+            raise AetherValidationError("Item is not in the actor's inventory.")
+
+        slot = params.slot.strip() or "default"
+        previous_item_id = actor.inventory.equip(item.id, slot=slot)
+        witnesses = world.determine_witnesses(actor.id)
+        events: List[WorldEvent] = []
+
+        if previous_item_id is not None:
+            events.append(
+                WorldEvent(
+                    world_id=world.id,
+                    actor_id=actor.id,
+                    target_ids=[previous_item_id],
+                    data=WorldActionEvent(
+                        type="item_unequipped",
+                        module="inventory",
+                        attributes={
+                            "item_id": previous_item_id,
+                            "character_id": actor.id,
+                            "slot": slot,
+                        },
+                    ),
+                    witnessed_by=witnesses,
+                )
+            )
+
+        events.append(
+            WorldEvent(
+                world_id=world.id,
+                actor_id=actor.id,
+                target_ids=[item.id],
+                data=WorldActionEvent(
+                    type="item_equipped",
+                    module="inventory",
+                    attributes={
+                        "item_id": item.id,
+                        "character_id": actor.id,
+                        "slot": slot,
+                        "previous_item_id": previous_item_id,
+                    },
+                ),
+                witnessed_by=witnesses,
+            )
+        )
+
+        return events
+
+    def perceive_item_equipped(
+        self,
+        world: World,
+        character_id: str,
+        event: WorldEvent,
+    ) -> Optional[Perception]:
+        attrs = ItemEquippedAttributes.model_validate(event.data.attributes)
+        actor_name = world.describe_character(attrs.character_id)
+        item_name = world.describe_item(attrs.item_id)
+
+        if character_id == attrs.character_id:
+            perspective = f"I equipped the {item_name}."
+            importance = 0.55
+            emotion = None
+            emotional_weight = 0.15
+        else:
+            perspective = f"I saw {actor_name} equip the {item_name}."
+            importance = 0.35
+            emotion = None
+            emotional_weight = 0.05
+
+        return Perception(
+            character_id=character_id,
+            event_id=event.id,
+            summary=f"{actor_name} equipped the {item_name}.",
+            perspective=perspective,
+            importance=importance,
+            emotional_weight=emotional_weight,
+            emotion=emotion,
+            tags=["inventory", "item_equipped", item_name.lower(), attrs.slot],
+            participant_ids=[attrs.character_id],
+        )
+
+    def unequip_item(self, world: World, action: Action) -> List[WorldEvent]:
+        params = UnequipItemParams.model_validate(action.data.parameters)
+
+        actor = world.characters.get(action.actor_id)
+        if actor is None:
+            raise AetherValidationError(f"Actor does not exist: {action.actor_id}")
+
+        item_id = params.item_id
+        slot = params.slot.strip() if params.slot else None
+
+        if not item_id and not slot:
+            raise AetherValidationError(
+                "Provide item_id or slot to unequip."
+            )
+
+        if slot and item_id:
+            equipped_in_slot = actor.inventory.equipped.get(slot)
+            if equipped_in_slot != item_id:
+                raise AetherValidationError(
+                    f"Item {item_id} is not equipped in slot '{slot}'."
+                )
+        elif slot:
+            item_id = actor.inventory.equipped.get(slot)
+            if item_id is None:
+                raise AetherValidationError(f"Nothing equipped in slot '{slot}'.")
+        else:
+            slot = actor.inventory.slot_of(item_id)
+            if slot is None:
+                raise AetherValidationError("Item is not equipped.")
+
+        cleared = actor.inventory.unequip_slot(slot)
+        if cleared is None or cleared != item_id:
+            raise AetherValidationError("Failed to unequip item.")
+
+        event = WorldEvent(
+            world_id=world.id,
+            actor_id=actor.id,
+            target_ids=[item_id],
+            data=WorldActionEvent(
+                type="item_unequipped",
+                module="inventory",
+                attributes={
+                    "item_id": item_id,
+                    "character_id": actor.id,
+                    "slot": slot,
+                },
+            ),
+            witnessed_by=world.determine_witnesses(actor.id),
+        )
+
+        return [event]
+
+    def perceive_item_unequipped(
+        self,
+        world: World,
+        character_id: str,
+        event: WorldEvent,
+    ) -> Optional[Perception]:
+        attrs = ItemUnequippedAttributes.model_validate(event.data.attributes)
+        actor_name = world.describe_character(attrs.character_id)
+        item_name = world.describe_item(attrs.item_id)
+
+        if character_id == attrs.character_id:
+            perspective = f"I unequipped the {item_name}."
+            importance = 0.45
+            emotion = None
+            emotional_weight = 0.1
+        else:
+            perspective = f"I saw {actor_name} unequip the {item_name}."
+            importance = 0.3
+            emotion = None
+            emotional_weight = 0.05
+
+        return Perception(
+            character_id=character_id,
+            event_id=event.id,
+            summary=f"{actor_name} unequipped the {item_name}.",
+            perspective=perspective,
+            importance=importance,
+            emotional_weight=emotional_weight,
+            emotion=emotion,
+            tags=["inventory", "item_unequipped", item_name.lower(), attrs.slot],
+            participant_ids=[attrs.character_id],
         )
