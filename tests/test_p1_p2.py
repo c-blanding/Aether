@@ -6,7 +6,12 @@ from pathlib import Path
 from aether import Action, Aether, PresentationCallbacks, WorldAction
 from aether.ai.context import PresentationTone, ScenePayload
 from aether.ai.continuity import SceneSummaryDraft
-from aether.ai.nodes import _render_narrative, execute_action, generate_dialogue
+from aether.ai.nodes import (
+    _item_is_visible,
+    _render_narrative,
+    execute_action,
+    generate_dialogue,
+)
 from aether.ai.state import NextStepDecision
 from aether.content import load_scenario
 from aether.domain.interactions import unanswered_questions
@@ -341,6 +346,28 @@ class WorldDensityTests(unittest.TestCase):
         self.assertTrue(waited.accepted, waited.reason)
         self.assertEqual(world.clock.minute_of_day, 9 * 60)
         self.assertEqual(guest.state.location_id, hall.id)
+
+    def test_nested_open_container_contents_are_visible(self) -> None:
+        aether = Aether()
+        world = aether.create_world(name="Nested")
+        room = world.create_location(name="Room")
+        actor = world.create_character(name="Lena", location_id=room.id)
+        chest = world.create_item(
+            name="Chest",
+            location_id=room.id,
+            is_container=True,
+            container_open=True,
+        )
+        pouch = world.create_item(
+            name="Pouch",
+            container_id=chest.id,
+            is_container=True,
+            container_open=True,
+        )
+        note = world.create_item(name="Note", container_id=pouch.id)
+        self.assertTrue(_item_is_visible(world, note, actor, room.id))
+        pouch.container_open = False
+        self.assertFalse(_item_is_visible(world, note, actor, room.id))
 
 
 class BranchRestoreTests(unittest.TestCase):

@@ -147,7 +147,11 @@ class Aether:
         self.worlds[world.id] = world
         return world
 
-    def save(self, world: World) -> World:
+    def save(
+        self,
+        world: World,
+        session: Session | None = None,
+    ) -> World:
         """
         Persist the world shell and sync related aggregates to their tables.
 
@@ -155,12 +159,18 @@ class Aether:
         - sessions → session store (upsert)
         - events → event store (append-only; duplicates ignored)
 
+        When ``session`` is provided, that session's current branch tip is
+        refreshed from the live world before sessions are written. Other
+        sessions are saved as-is so their tips are not overwritten.
+
         The worlds document does not embed those aggregates.
         """
+        if session is not None:
+            self._require_session_world(world, session)
         world.state.active_session_ids = list(world.sessions.keys())
         saved = self.store.worlds.save(world)
         self._sync_characters(saved)
-        self._sync_sessions(saved)
+        self._sync_sessions(saved, tip_session=session)
         self._sync_events(saved)
         self.worlds[saved.id] = saved
         return saved
@@ -178,12 +188,14 @@ class Aether:
         for character in world.characters.values():
             self.store.characters.save(world.id, character)
 
-    def _sync_sessions(self, world: World) -> None:
+    def _sync_sessions(
+        self,
+        world: World,
+        tip_session: Session | None = None,
+    ) -> None:
+        if tip_session is not None and tip_session.world_id == world.id:
+            tip_session.sync_tip(world)
         for session in world.sessions.values():
-            # Keep the active branch tip aligned with the live world so load
-            # can restore gameplay state from the session snapshot.
-            if session.world_id == world.id:
-                session.sync_tip(world)
             self.store.sessions.save(session)
 
     def _sync_events(self, world: World) -> None:
@@ -199,22 +211,14 @@ class Aether:
         """
         Rebuild in-memory aggregates from satellite tables.
 
-        When a session tip snapshot exists, apply it so branch-local character
-        and event views win over the append-only event history.
+        Characters and events are loaded from their stores first. When a
+        primary session tip exists, it is applied so branch-local views win
+        over the append-only event history.
         """
         sessions = self.store.sessions.list_by_world(world.id)
         if sessions:
             world.sessions = {session.id: session for session in sessions}
             world.state.active_session_ids = list(world.sessions.keys())
-
-        for session_id in list(world.state.active_session_ids):
-            session = world.sessions.get(session_id)
-            if session is None:
-                continue
-            tip = session.branch_snapshots.get(session.current_branch_id)
-            if tip is not None:
-                tip.apply_to(world)
-                return
 
         characters = self.store.characters.list_by_world(world.id)
         if characters:
@@ -223,6 +227,23 @@ class Aether:
         stored_events = self.store.events.list_by_world(world.id)
         if stored_events:
             world.events = EventStore(events=list(stored_events))
+
+        session = self._primary_session(world)
+        if session is None:
+            return
+        tip = session.branch_snapshots.get(session.current_branch_id)
+        if tip is not None:
+            tip.apply_to(world)
+
+    @staticmethod
+    def _primary_session(world: World) -> Session | None:
+        if len(world.sessions) == 1:
+            return next(iter(world.sessions.values()))
+        for session_id in world.state.active_session_ids:
+            session = world.sessions.get(session_id)
+            if session is not None:
+                return session
+        return None
 
     def step(
         self,
@@ -259,9 +280,9 @@ class Aether:
                     }
                 )
                 self._consolidate_after_events(world, result.events)
-            # Branch tips are captured by interact/fork/checkout, not each step.
             # Events/sessions/characters are synced via save().
-            self.save(world)
+            # When a session is provided, its current tip is refreshed.
+            self.save(world, session=session)
         return result
 
     def list_actions(self) -> list[str]:
@@ -281,7 +302,7 @@ class Aether:
         """
         self._require_session_world(world, session)
         branch = session.branch(world, from_turn_id=from_turn_id)
-        self.save(world)
+        self.save(world, session=session)
         return branch
 
     def checkout(
@@ -295,7 +316,7 @@ class Aether:
         """
         self._require_session_world(world, session)
         branch = session.checkout(world, branch_id)
-        self.save(world)
+        self.save(world, session=session)
         return branch
 
     def undo(
@@ -308,7 +329,7 @@ class Aether:
         """
         self._require_session_world(world, session)
         turn = session.undo_last_turn(world)
-        self.save(world)
+        self.save(world, session=session)
         return turn
 
     def interact(
@@ -388,7 +409,7 @@ class Aether:
         except Exception:
             pre_turn.apply_to(world)
             session.discard_turn(turn.id, interaction.id)
-            self.save(world)
+            self.save(world, session=session)
             raise
 
         if result.events:
@@ -399,7 +420,7 @@ class Aether:
             f"Captured branch tip for {session.current_branch_id}"
         )
 
-        self.save(world)
+        self.save(world, session=session)
         return result
 
     def interact_stream(

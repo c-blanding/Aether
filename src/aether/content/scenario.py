@@ -99,7 +99,7 @@ class ScenarioDocument(BaseModel):
     items: list[ScenarioItem] = Field(default_factory=list)
     passages: list[ScenarioPassage] = Field(default_factory=list)
     agendas: list[ScenarioAgenda] = Field(default_factory=list)
-    start_minute: int | None = None
+    start_minute: int | None = Field(default=None, ge=0, le=24 * 60 - 1)
 
 
 def _read_document(path: Path) -> dict[str, Any]:

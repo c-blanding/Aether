@@ -70,6 +70,33 @@ def _recall_pack(character: Any, query: str, session: Any, location_id: str | No
     )
 
 
+def _held_or_placed_here(state: Any, actor: Any, location_id: str | None) -> bool:
+    return state.location_id == location_id or (
+        actor is not None and state.owner_id == actor.id
+    )
+
+
+def _container_reachable(
+    world: Any,
+    container: Any,
+    actor: Any,
+    location_id: str | None,
+    seen: set[str],
+) -> bool:
+    """True when an open container sits in the room, in hand, or in such a container."""
+    container_id = getattr(container, "id", None)
+    if not container_id or container_id in seen:
+        return False
+    seen.add(container_id)
+    parent_id = getattr(container.state, "container_id", None)
+    if parent_id:
+        parent = world.items.get(parent_id)
+        if parent is None or not getattr(parent, "container_open", False):
+            return False
+        return _container_reachable(world, parent, actor, location_id, seen)
+    return _held_or_placed_here(container.state, actor, location_id)
+
+
 def _item_is_visible(world: Any, item: Any, actor: Any, location_id: str | None) -> bool:
     if getattr(item.state, "consumed", False):
         return False
@@ -78,10 +105,7 @@ def _item_is_visible(world: Any, item: Any, actor: Any, location_id: str | None)
         container = world.items.get(container_id)
         if container is None or not container.container_open:
             return False
-        container_here = container.state.location_id == location_id or (
-            actor is not None and container.state.owner_id == actor.id
-        )
-        if not container_here:
+        if not _container_reachable(world, container, actor, location_id, set()):
             return False
         if getattr(item, "hidden", False):
             return False
