@@ -39,28 +39,34 @@ class NextStepDecision(BaseModel):
 class DialogueLineDraft(BaseModel):
     character_id: str = Field(..., description="ID of the speaking character.")
     character_name: str = Field(..., description="Display name of the speaker.")
-    text: str = Field(..., description="Exact words spoken.")
+    text: str = Field(..., description="Exact words spoken (no stage directions).")
     emotion: Optional[str] = Field(
         default=None,
-        description="Optional emotion for this line.",
+        description="Optional short emotion tag for this line.",
     )
 
 
-class GeneratedPresentation(BaseModel):
-    """Structured LLM output for host-facing presentation after a step."""
+class GeneratedNarrative(BaseModel):
+    """Structured LLM output for the narrative renderer."""
 
     narrative: str = Field(
         ...,
-        description="Short third-person narration of what just happened.",
+        description="Third-person narration of the committed beat. No quoted dialogue.",
     )
+
+
+class GeneratedDialogueLines(BaseModel):
+    """Structured LLM output for the dialogue renderer."""
+
     lines: list[DialogueLineDraft] = Field(
         default_factory=list,
-        description="Spoken lines when speaking events occurred; otherwise empty.",
+        description="Spoken lines for the host to present.",
     )
 
 
-# Backward-compatible alias.
-GeneratedDialogue = GeneratedPresentation
+# Backward-compatible aliases.
+GeneratedPresentation = GeneratedDialogueLines
+GeneratedDialogue = GeneratedDialogueLines
 
 
 class InteractionState(TypedDict, total=False):

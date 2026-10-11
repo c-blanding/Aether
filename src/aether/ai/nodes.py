@@ -8,11 +8,14 @@ from langchain_core.runnables import RunnableConfig
 from aether.ai.prompts import (
     DECIDE_SYSTEM,
     DECIDE_USER,
-    PRESENTATION_SYSTEM,
-    PRESENTATION_USER,
+    DIALOGUE_SYSTEM,
+    DIALOGUE_USER,
+    NARRATIVE_SYSTEM,
+    NARRATIVE_USER,
 )
 from aether.ai.state import (
-    GeneratedPresentation,
+    GeneratedDialogueLines,
+    GeneratedNarrative,
     InteractionState,
     NextStepDecision,
 )
@@ -340,17 +343,203 @@ def _stub_narrative(world: Any, events: list[dict[str, Any]]) -> str:
     return " ".join(parts).strip() or "Something happens."
 
 
+def _collect_character_ids(events: list[dict[str, Any]]) -> set[str]:
+    character_ids: set[str] = set()
+    for event in events:
+        actor_id = event.get("actor_id")
+        if actor_id:
+            character_ids.add(actor_id)
+        attrs = (event.get("data") or {}).get("attributes") or {}
+        for key in (
+            "speaker_id",
+            "listener_id",
+            "new_owner_id",
+            "character_id",
+            "from_character_id",
+            "to_character_id",
+            "used_by_id",
+        ):
+            if attrs.get(key):
+                character_ids.add(attrs[key])
+        for target_id in attrs.get("target_ids") or []:
+            if isinstance(target_id, str) and target_id.startswith("char_"):
+                character_ids.add(target_id)
+    return character_ids
+
+
+def _character_briefs(
+    world: Any,
+    character_ids: set[str],
+    recall_query: str,
+) -> list[dict[str, Any]]:
+    briefs: list[dict[str, Any]] = []
+    for character_id in character_ids:
+        character = world.characters.get(character_id)
+        if character is None:
+            continue
+        location = world.locations.get(character.state.location_id or "")
+        briefs.append(
+            {
+                "id": character.id,
+                "name": character.name,
+                "role": character.identity.role,
+                "background": character.identity.background,
+                "personality": character.personality.model_dump(mode="json"),
+                "emotion": character.state.emotion,
+                "status": character.state.status,
+                "location": {
+                    "id": character.state.location_id,
+                    "name": location.name if location else None,
+                    "description": location.description if location else None,
+                },
+                "goals": [
+                    {"description": g.description, "priority": g.priority}
+                    for g in character.goals.prioritize()[:6]
+                ],
+                "beliefs": [
+                    {
+                        "proposition": b.proposition,
+                        "believed_value": b.believed_value,
+                        "confidence": b.confidence,
+                    }
+                    for b in list(character.knowledge.beliefs.values())[:8]
+                ],
+                "memories": [
+                    {
+                        "perspective": m.perspective,
+                        "importance": m.importance,
+                        "emotion": m.emotion,
+                    }
+                    for m in character.recall(recall_query)[:8]
+                ],
+            }
+        )
+    return briefs
+
+
+def _scene_payload(
+    world: Any,
+    actor_id: str,
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    actor = world.characters.get(actor_id)
+    location_id = actor.state.location_id if actor is not None else None
+    location = world.locations.get(location_id) if location_id else None
+
+    nearby = []
+    for character in world.characters.values():
+        if character.state.location_id != location_id:
+            continue
+        nearby.append(
+            {
+                "id": character.id,
+                "name": character.name,
+                "role": character.identity.role,
+                "emotion": character.state.emotion,
+            }
+        )
+
+    visible_items = []
+    for item in world.items.values():
+        if item.state.location_id == location_id or (
+            actor is not None and item.state.owner_id == actor.id
+        ):
+            visible_items.append(
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "description": item.description,
+                    "owner_id": item.state.owner_id,
+                    "location_id": item.state.location_id,
+                }
+            )
+
+    return {
+        "world_name": world.metadata.name if world.metadata else None,
+        "world_description": world.metadata.description if world.metadata else None,
+        "location": {
+            "id": location_id,
+            "name": location.name if location else None,
+            "description": location.description if location else None,
+        },
+        "nearby_characters": nearby,
+        "visible_items": visible_items,
+        "event_types": [
+            (event.get("data") or {}).get("type") for event in events
+        ],
+    }
+
+
+def _render_narrative(
+    *,
+    model: Any,
+    message: str,
+    events: list[dict[str, Any]],
+    scene: dict[str, Any],
+    characters: list[dict[str, Any]],
+    tone: dict[str, Any] | None = None,
+) -> str:
+    prompt = NARRATIVE_USER.format(
+        message=message or "",
+        events=json.dumps(events, indent=2),
+        scene=json.dumps(scene, indent=2),
+        characters=json.dumps(characters, indent=2),
+        tone=json.dumps(tone or {}, indent=2),
+    )
+    structured = model.with_structured_output(
+        GeneratedNarrative,
+        method="function_calling",
+    )
+    generated: GeneratedNarrative = structured.invoke(
+        [
+            {"role": "system", "content": NARRATIVE_SYSTEM},
+            {"role": "user", "content": prompt},
+        ]
+    )
+    return (generated.narrative or "").strip()
+
+
+def _render_dialogue(
+    *,
+    model: Any,
+    message: str,
+    speaking_events: list[dict[str, Any]],
+    scene: dict[str, Any],
+    characters: list[dict[str, Any]],
+    narrative: str,
+) -> list[dict[str, Any]]:
+    prompt = DIALOGUE_USER.format(
+        message=message or "",
+        events=json.dumps(speaking_events, indent=2),
+        scene=json.dumps(scene, indent=2),
+        characters=json.dumps(characters, indent=2),
+        narrative=narrative or "(none)",
+    )
+    structured = model.with_structured_output(
+        GeneratedDialogueLines,
+        method="function_calling",
+    )
+    generated: GeneratedDialogueLines = structured.invoke(
+        [
+            {"role": "system", "content": DIALOGUE_SYSTEM},
+            {"role": "user", "content": prompt},
+        ]
+    )
+    return [line.model_dump(mode="json") for line in generated.lines]
+
+
 def generate_dialogue(
     state: InteractionState,
     config: RunnableConfig,
 ) -> dict[str, Any]:
     """
-    Generate host presentation: narrative always, dialogue when speaking events exist.
+    Host presentation pass: narrative renderer always; dialogue renderer when speaking.
     """
     cfg = _cfg(config)
     world = cfg["world"]
     model = cfg.get("model")
     last_events = state.get("last_events") or []
+    message = state.get("message") or ""
 
     if not last_events:
         return {
@@ -388,80 +577,64 @@ def generate_dialogue(
             "trace_steps": ["generate_dialogue:stub"],
         }
 
-    character_ids: set[str] = set()
-    for event in last_events:
-        actor_id = event.get("actor_id")
-        if actor_id:
-            character_ids.add(actor_id)
-        attrs = (event.get("data") or {}).get("attributes") or {}
-        for key in ("speaker_id", "listener_id", "new_owner_id", "character_id"):
-            if attrs.get(key):
-                character_ids.add(attrs[key])
-
-    topic_bits = " ".join(
-        (e.get("data") or {}).get("attributes", {}).get("topic", "")
-        for e in last_events
-    )
-    briefs = []
-    for character_id in character_ids:
-        character = world.characters.get(character_id)
-        if character is None:
-            continue
-        briefs.append(
-            {
-                "id": character.id,
-                "name": character.name,
-                "role": character.identity.role,
-                "background": character.identity.background,
-                "personality": character.personality.model_dump(mode="json"),
-                "emotion": character.state.emotion,
-                "goals": [g.description for g in character.goals.prioritize()[:5]],
-                "beliefs": [
-                    b.proposition
-                    for b in list(character.knowledge.beliefs.values())[:5]
+    recall_query = " ".join(
+        filter(
+            None,
+            [
+                message,
+                *[
+                    (e.get("data") or {}).get("attributes", {}).get("topic", "")
+                    for e in last_events
                 ],
-                "memories": [
-                    m.perspective for m in character.recall(topic_bits or state.get("message") or "")[:6]
-                ],
-            }
+            ],
         )
-
+    )
+    character_ids = _collect_character_ids(last_events)
+    # Include nearby people for richer staging / possible interjections.
     actor = world.characters.get(state.get("actor_id") or "")
     location_id = actor.state.location_id if actor is not None else None
-    scene = {
-        "location_id": location_id,
-        "location_name": world.describe_location(location_id),
-        "world_name": world.metadata.name if world.metadata else None,
-        "world_description": world.metadata.description if world.metadata else None,
+    for character in world.characters.values():
+        if character.state.location_id == location_id:
+            character_ids.add(character.id)
+
+    briefs = _character_briefs(world, character_ids, recall_query)
+    scene = _scene_payload(world, state.get("actor_id") or "", last_events)
+    tone = {
+        "generation_mode": "narrative_then_dialogue",
+        "has_speaking_events": bool(speaking_events),
     }
 
-    prompt = PRESENTATION_USER.format(
-        events=json.dumps(last_events, indent=2),
-        characters=json.dumps(briefs, indent=2),
-        scene=json.dumps(scene, indent=2),
-    )
-    structured = model.with_structured_output(
-        GeneratedPresentation,
-        method="function_calling",
-    )
-    generated: GeneratedPresentation = structured.invoke(
-        [
-            {"role": "system", "content": PRESENTATION_SYSTEM},
-            {"role": "user", "content": prompt},
-        ]
+    narrative = _render_narrative(
+        model=model,
+        message=message,
+        events=last_events,
+        scene=scene,
+        characters=briefs,
+        tone=tone,
     )
 
-    lines = [line.model_dump(mode="json") for line in generated.lines]
-    # Drop dialogue if there were no speaking events (model over-generation).
-    if not speaking_events:
-        lines = []
-    narrative = (generated.narrative or "").strip()
+    lines: list[dict[str, Any]] = []
+    if speaking_events:
+        dialogue_ids = _collect_character_ids(speaking_events)
+        dialogue_briefs = [
+            brief for brief in briefs if brief["id"] in dialogue_ids
+        ] or briefs
+        lines = _render_dialogue(
+            model=model,
+            message=message,
+            speaking_events=speaking_events,
+            scene=scene,
+            characters=dialogue_briefs,
+            narrative=narrative,
+        )
+
     return {
         "dialogue": lines,
         "narrative_parts": [narrative] if narrative else [],
         "speaking_pending": False,
         "presentation_pending": False,
         "trace_steps": [
-            f"generate_dialogue:narrative={bool(narrative)}:lines={len(lines)}"
+            "generate_dialogue:"
+            f"narrative={bool(narrative)}:lines={len(lines)}"
         ],
     }

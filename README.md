@@ -414,7 +414,11 @@ gather_context → decide_next_action (one action or respond)
   → loop until respond or max_steps
 ```
 
-Presentation is module-agnostic: after committed events, `generate_dialogue` returns third-person `narrative` and, when speaking events occurred, `dialogue` lines.
+Presentation is module-agnostic and split into two renderers after committed events:
+1. **Narrative** — immersive third-person prose (no quoted speech)
+2. **Dialogue** — in-character spoken lines when speaking events occurred
+
+Both use dedicated prompts aimed at interactive-fiction / live-character host quality, grounded only in committed events and character briefs.
 
 Prefer `Aether.interact` over deprecated `Session.interact`.
 
