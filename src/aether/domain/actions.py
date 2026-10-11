@@ -75,6 +75,12 @@ class Action(BaseModel):
         description="Modular action payload containing the action type, module, version, and parameters.",
     )
 
+    witnesses: List[str] = Field(
+        default_factory=list,
+        description="IDs of characters that witnessed the action.",
+        examples=["char_arthur", "char_bob"],
+    )
+
     @property
     def type(self) -> str:
         return self.data.type

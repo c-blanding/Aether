@@ -1,4 +1,6 @@
-from typing import Dict
+from __future__ import annotations
+
+from typing import Dict, Optional
 
 from pydantic import BaseModel, Field
 
@@ -31,6 +33,31 @@ class Relationship(BaseModel):
     suspicion: float = Field(
         default=0.0,
         description="Suspicion score toward the target character.",
+    )
+
+
+class RelationshipDelta(BaseModel):
+    """One directional relationship change applied during a turn."""
+
+    from_character_id: str = Field(
+        ...,
+        description="Character whose relationship scores were updated.",
+    )
+    to_character_id: str = Field(
+        ...,
+        description="Target of the updated relationship.",
+    )
+    trust_delta: float = Field(default=0.0)
+    affinity_delta: float = Field(default=0.0)
+    fear_delta: float = Field(default=0.0)
+    suspicion_delta: float = Field(default=0.0)
+    reason: str = Field(
+        default="",
+        description="Short reason for the delta (event type / social cue).",
+    )
+    event_id: Optional[str] = Field(
+        default=None,
+        description="Source event ID when available.",
     )
 
 

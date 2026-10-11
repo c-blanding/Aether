@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from aether.components.shared import new_id
 
 from aether.components.capatability import CapabilitySet
 from aether.components.goal import GoalManager, Goal
 from aether.components.inventory import Inventory
-from aether.components.knowledge import Knowledge, Belief
-from aether.components.memory import Memory, MemoryRecord
+from aether.cognition.knowledge import Knowledge, Belief
+from aether.cognition.memory import Memory, MemoryRecord, PinnedFact, PinnedKind, RecallPack
 from aether.components.planner import Planner
 from aether.domain.relationship import RelationshipManager, Relationship
 
@@ -95,8 +95,10 @@ class Personality(BaseModel):
 
 class Character(BaseModel):
     """
-    Aggregate root representing an intelligent actor inside a world.
+    Intelligent character inside a the World.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     id: str = Field(
         default_factory=lambda: new_id("char"),
@@ -167,19 +169,85 @@ class Character(BaseModel):
     def remember(
         self,
         summary: str,
+        perspective: str | None = None,
         importance: float = 0.5,
+        emotional_weight: float = 0.0,
         emotion: Optional[str] = None,
         source_event_ids: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        participant_ids: Optional[List[str]] = None,
+        location_ids: Optional[List[str]] = None,
     ) -> MemoryRecord:
         return self.memory.remember(
             summary=summary,
+            perspective=perspective or summary,
             importance=importance,
+            emotional_weight=emotional_weight,
             emotion=emotion,
             source_event_ids=source_event_ids,
+            tags=tags,
+            participant_ids=participant_ids,
+            location_ids=location_ids,
         )
 
-    def recall(self, query: str) -> List[MemoryRecord]:
-        return self.memory.search(query)
+    def recall(
+        self,
+        query: str,
+        *,
+        location_ids: Optional[List[str]] = None,
+        participant_ids: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        limit: int = 10,
+        min_importance: float = 0.0,
+    ) -> List[MemoryRecord]:
+        return self.memory.search(
+            query,
+            limit=limit,
+            location_ids=location_ids,
+            participant_ids=participant_ids,
+            tags=tags,
+            min_importance=min_importance,
+        )
+
+    def pin_fact(
+        self,
+        text: str,
+        *,
+        key: str = "",
+        kind: PinnedKind = "host",
+    ) -> PinnedFact:
+        """Pin a fact card that later prompts keep without the full episodic log."""
+        return self.memory.pin(text, key=key, kind=kind)
+
+    def recall_pack(
+        self,
+        query: str,
+        *,
+        goals: Optional[List[str]] = None,
+        relationship_ids: Optional[List[str]] = None,
+        location_ids: Optional[List[str]] = None,
+        participant_ids: Optional[List[str]] = None,
+        extra_pinned: Optional[List[str]] = None,
+        limit: int = 4,
+    ) -> RecallPack:
+        if goals is None:
+            goals = [goal.description for goal in self.goals.prioritize()[:4]]
+        if relationship_ids is None:
+            relationship_ids = [
+                rel.target_character_id
+                for rel in self.relationships.relationships.values()
+                if abs(rel.trust) + abs(rel.affinity) + abs(rel.fear) + abs(rel.suspicion)
+                >= 0.05
+            ]
+        return self.memory.pack_recall(
+            query,
+            goals=goals,
+            relationship_ids=relationship_ids,
+            location_ids=location_ids,
+            participant_ids=participant_ids,
+            extra_pinned=extra_pinned,
+            limit=limit,
+        )
 
     def learn(
         self,
