@@ -1,10 +1,14 @@
 # Aether
 
+[![PyPI](https://img.shields.io/pypi/v/aether-sim.svg)](https://pypi.org/project/aether-sim/)
+[![Python](https://img.shields.io/pypi/pyversions/aether-sim.svg)](https://pypi.org/project/aether-sim/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Aether is a Python SDK for persistent, character-driven simulations. You define a world, place characters and objects in it, and change that world only by submitting **actions**. Accepted actions become **events**: durable facts the simulation stores, and that each witness can remember and believe.
 
 Models can propose what a character *tries*. Modules decide what actually happens. Cognition turns committed events into subjective memory and knowledge.
 
-**Version `0.1.0`** — early runtime. Inventory, navigation, dialogue, access, containers, time, cognitive encoding, Postgres persistence, and an act-one LangGraph `interact` loop are in place.
+**Version `1.0.1`** — installable SDK (`aether-sim`). Inventory, navigation, dialogue, access, containers, time, cognitive encoding, Postgres persistence, and an act-one LangGraph `interact` loop are in place.
 
 ## Contents
 

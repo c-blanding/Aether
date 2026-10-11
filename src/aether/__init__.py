@@ -21,7 +21,7 @@ World.model_rebuild()
 try:
     __version__ = version("aether-sim")
 except PackageNotFoundError:  # pragma: no cover - editable/source tree fallback
-    __version__ = "0.1.0"
+    __version__ = "1.0.1"
 
 
 __all__ = [
