@@ -3,12 +3,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aether.engine.registries import ModuleRegistry
-from aether.modules.base import AetherModule
 
 if TYPE_CHECKING:
     from aether.domain.actions import Action
     from aether.domain.events import WorldEvent
     from aether.domain.world import World
+    from aether.modules.base import AetherModule
 
 
 class RuntimeEngine:

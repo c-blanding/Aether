@@ -169,12 +169,14 @@ class Character(BaseModel):
     def remember(
         self,
         summary: str,
+        perspective: str | None = None,
         importance: float = 0.5,
         emotion: Optional[str] = None,
         source_event_ids: Optional[List[str]] = None,
     ) -> MemoryRecord:
         return self.memory.remember(
             summary=summary,
+            perspective=perspective or summary,
             importance=importance,
             emotion=emotion,
             source_event_ids=source_event_ids,
