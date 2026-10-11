@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
@@ -80,11 +81,16 @@ class Session(BaseModel):
         idempotency_key: Optional[str] = None,
     ) -> InteractionResult:
         """
-        MVP placeholder.
+        Deprecated placeholder.
 
-        Later this should call the runtime to convert the message into actions,
-        then route those actions through world.step(...).
+        Use ``Aether.interact(world, session, message, actor_id=...)`` instead.
+        This method only records an empty completed interaction for compatibility.
         """
+        warnings.warn(
+            "Session.interact is deprecated; use Aether.interact instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
         interaction = Interaction.from_message(
             session_id=self.id,
@@ -102,6 +108,9 @@ class Session(BaseModel):
         )
 
         interaction.trace.add_step(f"Created turn {turn.number}")
+        interaction.trace.add_step(
+            "Deprecated Session.interact; use Aether.interact"
+        )
 
         result = InteractionResult(
             interaction_id=interaction.id,

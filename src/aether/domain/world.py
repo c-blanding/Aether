@@ -343,6 +343,24 @@ class World(BaseModel):
                 action_id=action.id,
             )
 
+    def describe_character(self, character_id: str | None) -> str:
+        if not character_id:
+            return "someone"
+        character = self.characters.get(character_id)
+        return character.name if character is not None else "someone"
+
+    def describe_item(self, item_id: str | None) -> str:
+        if not item_id:
+            return "an item"
+        item = self.items.get(item_id)
+        return item.name if item is not None else "an item"
+
+    def describe_location(self, location_id: str | None) -> str:
+        if not location_id:
+            return "somewhere"
+        location = self.locations.get(location_id)
+        return location.name if location is not None else "somewhere"
+
     def determine_witnesses(self, actor_id: str) -> List[str]:
         actor = self.characters.get(actor_id)
 

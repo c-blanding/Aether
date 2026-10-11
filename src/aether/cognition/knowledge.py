@@ -58,6 +58,13 @@ class Knowledge(BaseModel):
         description="Mapping of belief ID to Belief objects.",
     )
 
+    def find_by_proposition(self, proposition: str) -> Optional[Belief]:
+        normalized = proposition.strip().lower()
+        for belief in self.beliefs.values():
+            if belief.proposition.strip().lower() == normalized:
+                return belief
+        return None
+
     def learn(
         self,
         proposition: str,
@@ -65,13 +72,26 @@ class Knowledge(BaseModel):
         confidence: float = 1.0,
         source_event_ids: Optional[List[str]] = None,
     ) -> Belief:
+        """
+        Learn a proposition, or reinforce an existing matching belief.
+        """
+        source_event_ids = source_event_ids or []
+        existing = self.find_by_proposition(proposition)
+
+        if existing is not None:
+            existing.believed_value = believed_value
+            existing.confidence = max(existing.confidence, min(confidence, 1.0))
+            for event_id in source_event_ids:
+                if event_id not in existing.source_event_ids:
+                    existing.source_event_ids.append(event_id)
+            return existing
+
         belief = Belief(
             proposition=proposition,
             believed_value=believed_value,
             confidence=confidence,
-            source_event_ids=source_event_ids or [],
+            source_event_ids=source_event_ids,
         )
-
         self.beliefs[belief.id] = belief
         return belief
 

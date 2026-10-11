@@ -36,3 +36,6 @@ class RuntimeEngine:
         world.state.increment_version()
 
         return validated_events
+
+    def list_action_types(self) -> list[str]:
+        return self.modules.actions.action_types()

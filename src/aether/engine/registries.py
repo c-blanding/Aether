@@ -87,6 +87,12 @@ class ActionRegistry:
     def supports(self, action_type: str) -> bool:
         return action_type in self.actions
 
+    def list_actions(self) -> list[RegisteredAction]:
+        return list(self.actions.values())
+
+    def action_types(self) -> list[str]:
+        return [action.action_type for action in self.actions.values()]
+
 
 @dataclass
 class RegisteredEventSchema:
@@ -141,6 +147,8 @@ class EventRegistry:
     def supports(self, event_type: str) -> bool:
         return event_type in self.events
 
+    def event_types(self) -> list[str]:
+        return [event.event_type for event in self.events.values()]
 
 # Backward-compatible alias
 EventSchemaRegistry = EventRegistry
@@ -152,25 +160,42 @@ PerceptionHandler = Callable[
 ]
 
 
+@dataclass
+class RegisteredPerception:
+    event_type: str
+    module_name: str
+    handler: PerceptionHandler
+
+
 class PerceptionRegistry:
     """Registry that maps event types to perception handlers."""
 
     def __init__(self) -> None:
-        self.handlers: dict[str, PerceptionHandler] = {}
+        self.perceptions: dict[str, RegisteredPerception] = {}
 
     def register(
         self,
         event_type: str,
+        module_name: str,
         handler: PerceptionHandler,
     ) -> None:
-        self.handlers[event_type] = handler
+        self.perceptions[event_type] = RegisteredPerception(
+            event_type=event_type,
+            module_name=module_name,
+            handler=handler,
+        )
 
     def get(self, event_type: str) -> Optional[PerceptionHandler]:
-        return self.handlers.get(event_type)
+        registration = self.perceptions.get(event_type)
+        if registration is None:
+            return None
+        return registration.handler
 
     def supports(self, event_type: str) -> bool:
-        return event_type in self.handlers
+        return event_type in self.perceptions
 
+    def perception_types(self) -> list[str]:
+        return [perception.event_type for perception in self.perceptions.values()]
 
 class ModuleRegistry:
     """
@@ -205,3 +230,11 @@ class ModuleRegistry:
     def is_installed(self, module_name: str) -> bool:
         return module_name in self.modules
 
+    def list_actions(self) -> list[str]:
+        return self.actions.action_types()
+
+    def list_events(self) -> list[str]:
+        return self.events.event_types()
+
+    def list_perceptions(self) -> list[str]:
+        return self.perceptions.perception_types()

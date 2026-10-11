@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from aether.cognition.perception import Perception
+from aether.components.shared import AetherValidationError
 from aether.domain.actions import Action
 from aether.domain.events import WorldActionEvent, WorldEvent
+from aether.domain.world import World
 from aether.engine.registries import ModuleRegistry
 from aether.modules.base import AetherModule
-from aether.components.shared import AetherValidationError
-from aether.domain.world import World
 
 
 class UseItemParams(BaseModel):
@@ -190,6 +191,27 @@ class InventoryModule(AetherModule):
             attribute_model=UseItemAttributes,
         )
 
+        registry.perceptions.register(
+            event_type="item_picked_up",
+            module_name=self.name,
+            handler=self.perceive_item_picked_up,
+        )
+        registry.perceptions.register(
+            event_type="item_dropped",
+            module_name=self.name,
+            handler=self.perceive_item_dropped,
+        )
+        registry.perceptions.register(
+            event_type="item_given",
+            module_name=self.name,
+            handler=self.perceive_item_given,
+        )
+        registry.perceptions.register(
+            event_type="item_used",
+            module_name=self.name,
+            handler=self.perceive_item_used,
+        )
+
     def pick_up_item(self, world: World, action: Action) -> List[WorldEvent]:
         params = PickUpItemParams.model_validate(action.data.parameters)
 
@@ -234,6 +256,49 @@ class InventoryModule(AetherModule):
 
         return [event]
 
+    def perceive_item_picked_up(
+        self,
+        world: World,
+        character_id: str,
+        event: WorldEvent,
+    ) -> Optional[Perception]:
+        attrs = ItemPickedUpAttributes.model_validate(event.data.attributes)
+        actor_name = world.describe_character(event.actor_id)
+        item_name = world.describe_item(attrs.item_id)
+        location_ids = [
+            location_id
+            for location_id in [attrs.previous_location_id]
+            if location_id
+        ]
+
+        if character_id == attrs.new_owner_id:
+            perspective = f"I picked up the {item_name}."
+            importance = 0.7
+            emotion = "curiosity"
+            emotional_weight = 0.3
+        else:
+            perspective = f"I saw {actor_name} pick up the {item_name}."
+            importance = 0.45
+            emotion = None
+            emotional_weight = 0.1
+
+        return Perception(
+            character_id=character_id,
+            event_id=event.id,
+            summary=f"{actor_name} picked up the {item_name}.",
+            perspective=perspective,
+            importance=importance,
+            emotional_weight=emotional_weight,
+            emotion=emotion,
+            tags=["inventory", "item_picked_up", item_name.lower()],
+            participant_ids=[
+                value
+                for value in [event.actor_id, attrs.new_owner_id]
+                if value
+            ],
+            location_ids=location_ids,
+        )
+
     def drop_item(self, world: World, action: Action) -> List[WorldEvent]:
         params = DropItemParams.model_validate(action.data.parameters)
 
@@ -268,10 +333,53 @@ class InventoryModule(AetherModule):
                     "new_location_id": actor.state.location_id,
                 },
             ),
-            witnessed_by=world.determine_witnesses(actor.id),
+            witnessed_by=action.witnesses,
         )
 
         return [event]
+
+    def perceive_item_dropped(
+        self,
+        world: World,
+        character_id: str,
+        event: WorldEvent,
+    ) -> Optional[Perception]:
+        attrs = ItemDroppedAttributes.model_validate(event.data.attributes)
+        actor_name = world.describe_character(event.actor_id)
+        item_name = world.describe_item(attrs.item_id)
+        location_ids = [
+            location_id
+            for location_id in [attrs.new_location_id]
+            if location_id
+        ]
+
+        if character_id == attrs.previous_owner_id:
+            perspective = f"I put down the {item_name}."
+            importance = 0.55
+            emotion = None
+            emotional_weight = 0.1
+        else:
+            perspective = f"I saw {actor_name} drop the {item_name}."
+            importance = 0.4
+            emotion = None
+            emotional_weight = 0.05
+
+        return Perception(
+            character_id=character_id,
+            event_id=event.id,
+            summary=f"{actor_name} dropped the {item_name}.",
+            perspective=perspective,
+            importance=importance,
+            emotional_weight=emotional_weight,
+            emotion=emotion,
+            tags=["inventory", "item_dropped", item_name.lower()],
+            participant_ids=[
+                value
+                for value in [event.actor_id, attrs.previous_owner_id]
+                if value
+            ],
+            location_ids=location_ids,
+        )
 
     def give_item(self, world: World, action: Action) -> List[WorldEvent]:
         params = GiveItemParams.model_validate(action.data.parameters)
@@ -321,6 +429,56 @@ class InventoryModule(AetherModule):
 
         return [event]
 
+    def perceive_item_given(
+        self,
+        world: World,
+        character_id: str,
+        event: WorldEvent,
+    ) -> Optional[Perception]:
+        attrs = ItemGivenAttributes.model_validate(event.data.attributes)
+        giver_name = world.describe_character(attrs.from_character_id)
+        receiver_name = world.describe_character(attrs.to_character_id)
+        item_name = world.describe_item(attrs.item_id)
+
+        if character_id == attrs.from_character_id:
+            perspective = f"I gave the {item_name} to {receiver_name}."
+            importance = 0.75
+            emotion = "resolve"
+            emotional_weight = 0.35
+        elif character_id == attrs.to_character_id:
+            perspective = f"{giver_name} gave me the {item_name}."
+            importance = 0.8
+            emotion = "surprise"
+            emotional_weight = 0.45
+        else:
+            perspective = (
+                f"I saw {giver_name} give the {item_name} to {receiver_name}."
+            )
+            importance = 0.5
+            emotion = None
+            emotional_weight = 0.15
+
+        return Perception(
+            character_id=character_id,
+            event_id=event.id,
+            summary=(
+                f"{giver_name} gave the {item_name} to {receiver_name}."
+            ),
+            perspective=perspective,
+            importance=importance,
+            emotional_weight=emotional_weight,
+            emotion=emotion,
+            tags=["inventory", "item_given", item_name.lower()],
+            participant_ids=[
+                value
+                for value in [
+                    attrs.from_character_id,
+                    attrs.to_character_id,
+                ]
+                if value
+            ],
+        )
+
     def use_item(self, world: World, action: Action) -> List[WorldEvent]:
         params = UseItemParams.model_validate(action.data.parameters)
 
@@ -357,3 +515,45 @@ class InventoryModule(AetherModule):
         )
 
         return [event]
+
+    def perceive_item_used(
+        self,
+        world: World,
+        character_id: str,
+        event: WorldEvent,
+    ) -> Optional[Perception]:
+        attrs = UseItemAttributes.model_validate(event.data.attributes)
+        actor_name = world.describe_character(attrs.used_by_id)
+        item_name = world.describe_item(attrs.item_id)
+
+        if character_id == attrs.used_by_id:
+            perspective = f"I used the {item_name}."
+            importance = 0.7
+            emotion = "focus"
+            emotional_weight = 0.3
+        elif character_id in attrs.target_ids:
+            perspective = f"{actor_name} used the {item_name} on me."
+            importance = 0.85
+            emotion = "alarm"
+            emotional_weight = 0.55
+        else:
+            perspective = f"I saw {actor_name} use the {item_name}."
+            importance = 0.5
+            emotion = None
+            emotional_weight = 0.2
+
+        return Perception(
+            character_id=character_id,
+            event_id=event.id,
+            summary=f"{actor_name} used the {item_name}.",
+            perspective=perspective,
+            importance=importance,
+            emotional_weight=emotional_weight,
+            emotion=emotion,
+            tags=["inventory", "item_used", item_name.lower()],
+            participant_ids=[
+                value
+                for value in [attrs.used_by_id, *attrs.target_ids]
+                if value
+            ],
+        )

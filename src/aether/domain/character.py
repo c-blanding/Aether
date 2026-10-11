@@ -171,15 +171,23 @@ class Character(BaseModel):
         summary: str,
         perspective: str | None = None,
         importance: float = 0.5,
+        emotional_weight: float = 0.0,
         emotion: Optional[str] = None,
         source_event_ids: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        participant_ids: Optional[List[str]] = None,
+        location_ids: Optional[List[str]] = None,
     ) -> MemoryRecord:
         return self.memory.remember(
             summary=summary,
             perspective=perspective or summary,
             importance=importance,
+            emotional_weight=emotional_weight,
             emotion=emotion,
             source_event_ids=source_event_ids,
+            tags=tags,
+            participant_ids=participant_ids,
+            location_ids=location_ids,
         )
 
     def recall(self, query: str) -> List[MemoryRecord]:

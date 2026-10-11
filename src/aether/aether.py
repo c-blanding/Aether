@@ -7,8 +7,11 @@ from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field
 
 from aether.ai.aetherai import AetherAI
+from aether.cognition.engine import CognitiveEngine
 from aether.components.shared import AetherValidationError
 from aether.domain.actions import Action
+from aether.domain.interactions import Interaction, InteractionResult
+from aether.domain.sessions import Session
 from aether.domain.world import SimulationResult, World, WorldMetadata
 from aether.engine.runtime_engine import RuntimeEngine
 from aether.modules.base import AetherModule
@@ -48,6 +51,7 @@ class Aether:
     ) -> None:
         self.store = store or InMemoryStore()
         self.engine = RuntimeEngine()
+        self.cognition = CognitiveEngine()
         self.worlds: dict[str, World] = {}
         self.ai = AetherAI(
             engine=self.engine,
@@ -139,12 +143,65 @@ class Aether:
 
     def step(self, world: World, action: Action) -> SimulationResult:
         """
-        Execute an action, then persist accepted events and world state.
+        Execute an action, encode witness memories, then persist state.
         """
         result = world.step(action)
         if result.accepted:
             if result.events:
+                # Encode minds before persistence so saved world includes new memories.
+                self.cognition.encode_events(world, result.events)
                 self.store.events.append_many(result.events)
             self.store.worlds.save(world)
             self.worlds[world.id] = world
+        return result
+
+    def list_actions(self) -> list[str]:
+        return self.engine.list_action_types()
+
+    def interact(
+        self,
+        world: World,
+        session: Session,
+        message: str,
+        actor_id: str = "player",
+        *,
+        max_steps: int = 6,
+    ) -> InteractionResult:
+        """
+        Natural-language host entrypoint.
+
+        Runs the act-one LangGraph loop: gather context → decide one action →
+        validate → step (+ cognition) → generate narrative (and dialogue when
+        speaking) → loop until respond.
+        """
+        if session.world_id != world.id:
+            raise AetherValidationError(
+                "Session does not belong to the provided world."
+            )
+        if session.id not in world.sessions:
+            world.sessions[session.id] = session
+
+        interaction = Interaction.from_message(
+            session_id=session.id,
+            branch_id=session.current_branch_id,
+            message=message,
+            actor_id=actor_id,
+        )
+        session.history.add(interaction)
+        turn = session.timeline.next_turn(
+            branch_id=session.current_branch_id,
+            interaction_id=interaction.id,
+        )
+        interaction.trace.add_step(f"Created turn {turn.number}")
+
+        result = self.ai.interact(
+            self,
+            world,
+            session,
+            interaction,
+            max_steps=max_steps,
+        )
+
+        self.store.worlds.save(world)
+        self.worlds[world.id] = world
         return result

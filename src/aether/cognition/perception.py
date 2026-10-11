@@ -77,7 +77,7 @@ class PerceptionProcessor:
 
     def perceive_event(
         self,
-        world: "World",
+        world: World,
         character_id: str,
         event: WorldEvent,
     ) -> Optional[Perception]:
@@ -90,15 +90,11 @@ class PerceptionProcessor:
                 event=event,
             )
 
-        return handler(
-            world,
-            character_id,
-            event,
-        )
+        return handler(world, character_id, event)
 
     def _generic_perception(
         self,
-        world: "World",
+        world: World,
         character_id: str,
         event: WorldEvent,
     ) -> Optional[Perception]:
